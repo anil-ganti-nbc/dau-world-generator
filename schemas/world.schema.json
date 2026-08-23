@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anil-ganti-nbc.github.io/dau-world-generator/schemas/world.schema.json",
+  "title": "DAU World",
+  "description": "A generated, causally valid diagnostic world. Hidden state is carried for runtime use; learner-facing surfaces must never render it.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "templateId",
+    "title",
+    "domainId",
+    "concepts",
+    "objective",
+    "seed",
+    "difficulty",
+    "briefing",
+    "hidden",
+    "actions",
+    "hypotheses",
+    "solution"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "templateId": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+/[a-z0-9-]+$",
+      "description": "domainId/templateId of the generating template."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "domainId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "concepts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$", "description": "DAU concept id (canonical curriculum ownership)." },
+          "tier": { "type": "integer", "minimum": 0, "maximum": 5 }
+        }
+      }
+    },
+    "prerequisiteConceptIds": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" }
+    },
+    "objective": { "type": "string", "minLength": 8 },
+    "seed": { "type": "string", "minLength": 1, "description": "World seed; same seed + domain version + engine version reproduces the world exactly." },
+    "difficulty": {
+      "type": "object",
+      "required": ["band", "relevantVariables", "distractorHypotheses", "causalDepth", "observability", "minInvestigations"],
+      "additionalProperties": false,
+      "properties": {
+        "band": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "relevantVariables": { "type": "integer", "minimum": 1 },
+        "distractorHypotheses": { "type": "integer", "minimum": 0 },
+        "causalDepth": { "type": "integer", "minimum": 1 },
+        "observability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minInvestigations": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "briefing": { "type": "string", "minLength": 20, "description": "Learner-facing situation. Must not name or uniquely imply the true cause." },
+    "hidden": {
+      "type": "object",
+      "required": ["causeId", "parameters"],
+      "properties": {
+        "causeId": { "type": "string" },
+        "parameters": { "type": "object" }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "label", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "kind": { "enum": ["inspect", "measure", "run", "configure"] },
+          "label": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "detail", "isTrue"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "detail": { "type": "string" },
+          "isTrue": { "type": "boolean", "description": "Exactly one hypothesis per world may be true." }
+        }
+      }
+    },
+    "solution": {
+      "type": "object",
+      "required": ["correctHypothesisId", "discriminatingActions", "explanation"],
+      "additionalProperties": false,
+      "properties": {
+        "correctHypothesisId": { "type": "string" },
+        "discriminatingActions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Actions whose combined evidence identifies the true cause."
+        },
+        "explanation": { "type": "string", "minLength": 10 }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "generatedAt": { "type": "string" },
+        "domainVersion": { "type": "string" },
+        "engineVersion": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      # The conformance tests import the canonical contract from a sibling
+      # checkout, matching how the Practice Labs repos consume it.
+      - uses: actions/checkout@v4
+        with:
+          repository: anil-ganti-nbc/dau-practice-labs
+          path: dau-practice-labs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install contract deps
+        working-directory: dau-practice-labs
+        run: npm ci --no-audit --no-fund
+      - name: Install
+        working-directory: repo
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: repo
+        run: npx tsc --noEmit
+      - name: Test
+        working-directory: repo
+        run: npm test
+      - name: Build
+        working-directory: repo
+        run: npm run build

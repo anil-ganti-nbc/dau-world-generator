@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anil-ganti-nbc.github.io/dau-world-generator/schemas/domain-manifest.schema.json",
+  "title": "DAU World domain plugin manifest",
+  "description": "Declares a domain plugin's identity, cause catalogue, and curriculum coverage so the engine and DAU can reason about possibility spaces without importing the plugin's code.",
+  "type": "object",
+  "required": ["domainId", "version", "name", "causes", "templates"],
+  "additionalProperties": false,
+  "properties": {
+    "domainId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "causes": {
+      "type": "array",
+      "minItems": 2,
+      "description": "The diagnosable cause catalogue. Distractors are drawn from this list.",
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "label": { "type": "string" },
+          "mechanism": { "type": "string" }
+        }
+      }
+    },
+    "templates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["templateId", "modes", "difficultyBands"],
+        "properties": {
+          "templateId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "modes": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "enum": ["diagnostic", "predictive", "optimisation", "construction", "comparative", "failure-injection"] }
+          },
+          "difficultyBands": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "integer", "minimum": 1, "maximum": 5 }
+          },
+          "conceptIds": {
+            "type": "array",
+            "description": "DAU concept ids this template can exercise.",
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" }
+          }
+        }
+      }
+    }
+  }
+}

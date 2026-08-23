@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anil-ganti-nbc.github.io/dau-world-generator/schemas/world-result.schema.json",
+  "title": "DAU World practice result (Practice Labs contract v1 envelope)",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "labId",
+    "conceptId",
+    "lessonId",
+    "completed",
+    "attempts",
+    "timeSpentMs"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "labId": { "const": "world-generator" },
+    "conceptId": { "type": "string", "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+    "lessonId": {
+      "type": "string",
+      "description": "Canonical DAU lesson id: {conceptId}-{5|10|20|30}."
+    },
+    "completed": { "type": "boolean" },
+    "attempts": { "type": "integer", "minimum": 0 },
+    "timeSpentMs": { "type": "integer", "minimum": 0 },
+    "selfRating": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "metadata": {
+      "type": "object",
+      "description": "Structured world outcome. Keys <=64 chars; values primitive.",
+      "propertyNames": { "maxLength": 64 },
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      }
+    }
+  }
+}

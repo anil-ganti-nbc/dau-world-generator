@@ -1,0 +1,47 @@
+{
+  "domainId": "cpu-memory",
+  "version": "1.0.0",
+  "name": "CPU memory hierarchy",
+  "description": "Diagnostic worlds over cache behaviour: conflicts, capacity, coherence, and prefetch interaction. All evidence is produced by real set-associative cache / coherence / prefetch simulations.",
+  "causes": [
+    {
+      "id": "conflict-miss",
+      "label": "Cache set conflicts"
+    },
+    {
+      "id": "capacity-miss",
+      "label": "Working set exceeds cache"
+    },
+    {
+      "id": "false-sharing",
+      "label": "False sharing between cores"
+    },
+    {
+      "id": "prefetch-storm",
+      "label": "Useless prefetch traffic"
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "regression-diagnosis",
+      "modes": [
+        "diagnostic"
+      ],
+      "difficultyBands": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "conceptIds": [
+        "cpu-cache-levels",
+        "cpu-cache-miss",
+        "cpu-write-policy",
+        "cpu-coherency",
+        "cpu-mesi",
+        "cpu-prefetch"
+      ]
+    }
+  ]
+}

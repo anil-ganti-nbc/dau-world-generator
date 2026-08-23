@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DAU World Generator</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>DAU World Generator</h1>
+        <p class="sub">Causal diagnostic worlds · deterministic seeds · independent validation</p>
+      </header>
+
+      <section id="setup" class="card">
+        <h2>Generate a world</h2>
+        <div class="row">
+          <label>Domain
+            <select id="domain">
+              <option value="cpu-memory">cpu-memory</option>
+            </select>
+          </label>
+          <label>Template
+            <select id="template">
+              <option value="regression-diagnosis">regression-diagnosis</option>
+            </select>
+          </label>
+          <label>Difficulty band
+            <select id="band">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </label>
+          <label>Seed
+            <input id="seed" type="text" value="first-world" />
+          </label>
+          <button id="generate" class="primary">Enter world</button>
+        </div>
+        <p class="hint">Same domain + template + seed always produces the identical world. Practice payloads (?practice=) pre-fill these controls.</p>
+      </section>
+
+      <section id="world" class="card hidden">
+        <h2 id="world-title"></h2>
+        <p id="world-objective" class="hint"></p>
+        <div id="briefing"></div>
+
+        <div class="cols">
+          <div>
+            <h3>Evidence budget</h3>
+            <p class="hint">Each probe costs a rerun. Choose deliberately.</p>
+            <div id="actions"></div>
+          </div>
+          <div>
+            <h3>Hypotheses</h3>
+            <p class="hint">Freeze a prediction before revealing evidence you trust.</p>
+            <div id="hypotheses"></div>
+          </div>
+        </div>
+
+        <h3>Evidence log</h3>
+        <div id="log" class="log"><p class="hint empty">No probes yet.</p></div>
+
+        <div id="verdict-area">
+          <button id="commit" class="primary" disabled>Commit diagnosis…</button>
+        </div>
+      </section>
+
+      <section id="result" class="card hidden">
+        <h2 id="result-title"></h2>
+        <div id="result-body"></div>
+        <button id="again">Back</button>
+      </section>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
