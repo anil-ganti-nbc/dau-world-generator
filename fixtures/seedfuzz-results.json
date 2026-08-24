@@ -2,8 +2,8 @@
   "tool": "dau-world-generator seedfuzz",
   "domain": "cpu-memory/regression-diagnosis",
   "domainVersion": "2.0.0",
-  "ranAt": "2026-08-24T09:01:52.431Z",
-  "perBandMs": 35661,
+  "ranAt": "2026-08-24T09:49:11.361Z",
+  "perBandMs": 37081,
   "totalSeeds": 750,
   "bands": [
     {

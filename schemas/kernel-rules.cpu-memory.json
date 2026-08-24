@@ -4,12 +4,22 @@
   "domainVersion": "2.0.0",
   "templateId": "regression-diagnosis",
   "inventoryVersion": 1,
-  "status": "PENDING_SME_REVIEW",
+  "status": "IN_REVIEW",
   "smeGate": {
     "reviewer": null,
     "reviewedAt": null,
-    "verdict": "PENDING",
-    "notes": "No rule has been certified. The generator is internally consistent by construction; real-world causal fidelity is UNVERIFIED. Learner exposure is blocked until every rule carries verdict PASS / REWORD / RETUNE / REMOVE and smeGate.verdict is SIGNED_OFF."
+    "verdict": "CHANGES_REQUESTED",
+    "notes": "AI technical pre-review (2026-08, see technicalPreReview below) returned 5 PASS / 9 REWORD / 1 RETUNE / 0 REMOVE. The one learner-exposure-blocking item — hierarchy-independent-walks — has been substantively retuned in code (true conditional hierarchical walk; L2 sees only L1 demand misses). The nine reword dispositions have been applied to rule claims/realWorldBasis. Domain remains LOCKED for learner exposure until a HUMAN reviewer sets smeGate.reviewer/reviewedAt and verdict SIGNED_OFF. An AI must never write its own name into smeGate."
+  },
+  "technicalPreReview": {
+    "reviewerKind": "AI_PRE_REVIEW",
+    "model": "ox-alpha (Hermes agent)",
+    "reviewedAt": "2026-08-24",
+    "inventoryVersionReviewed": 1,
+    "tally": { "pass": 5, "reword": 9, "retune": 1, "remove": 0 },
+    "dispositionsFile": "schemas/kernel-rules.cpu-memory.prereview.json",
+    "summary": "Rules most likely to train bad habits are not the declared fictions but the plausible compressed heuristics (spread-misses=>capacity, first-touch=>measured-miss, useful-prefetch=>faster, fewer-misses=>proportionally-faster, 80% same-word=>true sharing). All such heuristics are now labelled as generated-world separators, not hardware laws. hierarchy-independent-walks was the sole causal blocker and has been retuned in code.",
+    "authority": "PREPARES evidence only; cannot certify teaching physics as human-reviewed."
   },
   "rules": [
     {
@@ -49,36 +59,36 @@
       "id": "capacity-churn",
       "title": "Working set exceeding cache => misses spread across sets with reuse present",
       "kernel": "src/domains/cpu-memory/construct.ts (capacity recipes) + sim.ts localityMetrics",
-      "claim": "Sweeping data larger than the cache yields evenly spread misses; lines have reuse but are evicted before reuse distance closes.",
-      "realWorldBasis": "Definitional for capacity misses. The reuse-factor threshold that separates 'churn' from 'temporal loss' (<=2.5) is a diagnostic heuristic, not hardware.",
+      "claim": "Sweeping data larger than the cache yields misses distributed across many sets; lines have reuse but are evicted before reuse distance closes. MODEL SEPARATOR, not a hardware law: in these generated worlds a spread pattern with low reuse points at the capacity family. Real capacity pressure can also look concentrated (poorly distributed hash) and real spatial-locality loss also spreads — the discriminator is safe only inside this model.",
+      "realWorldBasis": "Definitional for capacity misses that the working set exceeding the cache causes eviction-before-reuse; but 'evenly spread' is a property of these recipes' uniform sweeps, and real caches with hashed indexing distribute differently.",
       "provenance": "deliberate-simplification",
       "confidence": "high-direction-low-magnitude",
       "affectsChannels": ["set-distribution"],
-      "diagnosticHeuristicTrained": "spread misses + low reuse => working-set/capacity family",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "spread misses + low reuse => working-set/capacity family (MODEL-ONLY separator; verify against footprint size before trusting on real hardware)",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — spread-pattern heuristic labelled a generated-world separator." }
     },
     {
       "id": "first-touch-compulsory",
-      "title": "First touch of a line is a miss even in an empty cache",
+      "title": "First touch of a line is conceptually a cold miss, though hardware prefetch can hide it from demand-miss counters",
       "kernel": "sim.ts SetAssocLru (any miss to unseen tag)",
-      "claim": "Fresh-data walks produce near-100% first-touch miss rates regardless of geometry.",
-      "realWorldBasis": "Definitional for compulsory misses. NOTE: real machines hide some first-touch cost via hardware prefetch; our model accounts for this through the prefetch channel, not the raw counter — see prefetch-next-line rule.",
+      "claim": "Fresh-data walks produce near-100% first-touch DEMAND miss rates in this model. DISTINCTION REQUIRED: a conceptual compulsory (cold) miss always happens on first touch; whether it shows up in an observed demand-miss counter depends on hardware prefetch having already fetched the line. Our model accounts for prefetch through the separate prefetch channel — so a learner comparing these readings to real machines must expect real first-touch misses to be partially hidden.",
+      "realWorldBasis": "The cold/compulsory category is textbook-standard. The deviation is in OBSERVATION: real counters under next-line prefetchers often show far fewer apparent cold misses than the conceptual count.",
       "provenance": "grounded-abstraction",
-      "confidence": "high",
+      "confidence": "high-concept-medium-observed",
       "affectsChannels": ["perf-counters", "miss-timeline"],
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — conceptual vs observed cold-miss distinction added." }
     },
     {
       "id": "spatial-once-per-line",
-      "title": "Scattered/strided access uses most of each line once => miss rate approaches compulsory floor",
+      "title": "Scattered/strided access uses most of each line once => miss rate approaches the compulsory floor WHEN the stream is fresh and reuse-free",
       "kernel": "construct.ts (gather-scatter, column-walk recipes); analyze.ts gapPattern classification",
-      "claim": "Pointer-chase or wide-stride patterns touch few bytes per line; nearly every access misses. Gap-pattern classification (contiguous <=1.2 lines, short-stride <=4, long-stride <=40, else scatter) is a derived heuristic from the mean inter-access gap.",
-      "realWorldBasis": "Directionally standard (spatial locality loss). The gap thresholds are arbitrary bin boundaries chosen for solver separability — NOT perceptual or hardware boundaries. A learner should not infer that 1.3 vs 1.1 mean-gap is meaningful.",
+      "claim": "CONDITIONAL MECHANISM: when a scattered/wide-stride pattern touches few bytes per line AND the stream is large/fresh enough that lines are not re-referenced before eviction, nearly every access misses. It is NOT true of every strided workload: short strides over small resident arrays hit heavily. The gap-pattern bins (contiguous <=1.2 lines, short-stride <=4, long-stride <=40, else scatter) are arbitrary boundaries chosen for SOLVER SEPARABILITY in generated worlds — they are not perceptual or hardware boundaries, and no real diagnostic meaning attaches to 1.3 vs 1.1 mean-gap.",
+      "realWorldBasis": "Directionally standard (poor spatial locality raises miss rate) with explicit preconditions. Real strided workloads can hit well when multiple elements per line are used or arrays fit in cache.",
       "provenance": "deliberate-simplification",
       "confidence": "high-direction-low-boundaries",
       "affectsChannels": ["set-distribution", "prefetch-audit"],
-      "diagnosticHeuristicTrained": "scatter/long-stride gaps + once-used lines => spatial-locality family",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "scatter/long-stride gaps + once-used lines => spatial-locality family (valid only for fresh, larger-than-cache streams)",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — freshness/size conditions added; bins labelled solver-separability boundaries." }
     },
     {
       "id": "reuse-distance-temporal-loss",
@@ -94,87 +104,87 @@
     },
     {
       "id": "prefetch-next-line-degree-1",
-      "title": "Degree-1 next-line prefetch: one issue per demand miss; useful iff L+1 demanded later",
+      "title": "Degree-1 next-line prefetch: one issue per demand miss; model-useful iff L+1 demanded later",
       "kernel": "sim.ts runPrefetch",
-      "claim": "Prefetch usefulness equals the fraction of issued lines whose successor line appears anywhere later in the demand stream. Sequential sweeps approach ~100% useful; scattered streams approach 0%.",
-      "realWorldBasis": "Real next-line prefetchers behave this way directionally. REAL DEVIATION: usefulness here ignores ORDER (L+1 counted as useful even if demanded before L was missed) and ignores timeliness (prefetch may arrive after demand). Real prefetchers also train/boost degrees; ours never adapts. Consequence: our useful-fraction OVERSTATES real-world effectiveness on mixed streams. Diagnostic heuristics trained ('healthy >=50% useful', 'defeated <35%') are model-relative thresholds, not hardware measurements.",
+      "claim": "In THIS MODEL, prefetch usefulness equals the fraction of issued lines whose successor line appears anywhere later in the demand stream. Sequential sweeps approach ~100% useful; scattered streams approach 0%. The diagnostic thresholds ('healthy >=50%', 'defeated <35%') are MODEL-RELATIVE SEPARATORS for generated worlds, not hardware measurements — real prefetcher behaviour has no such universal boundaries.",
+      "realWorldBasis": "Real next-line prefetchers behave this way directionally. REAL DEVIATIONS, all unmodelled: (1) TIMELINESS — a real prefetch only helps if it arrives before the demand; ours counts L+1 as useful regardless of order; (2) ADAPTATION — real prefetchers train, boost degrees, and throttle; ours never adapts; (3) POLLUTION — useless prefetched lines evict useful ones in real caches; our cache does not track prefetch fills. Net effect: our useful-fraction OVERSTATES real-world effectiveness on mixed streams.",
       "provenance": "deliberate-simplification",
       "confidence": "medium",
       "affectsChannels": ["prefetch-audit", "prefetch-off-run", "perf-counters"],
-      "diagnosticHeuristicTrained": "prefetch audit fraction separates storm/starved from healthy streaming",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "prefetch audit fraction separates storm/starved from healthy streaming INSIDE this model's threshold conventions",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — timeliness/adaptation/pollution named as unmodelled; thresholds labelled model-relative." }
     },
     {
       "id": "prefetch-hide-factor",
       "title": "Useful prefetches shorten effective miss penalty by min(0.8, 0.9 x usefulFraction)",
       "kernel": "analyze.ts hideFactor/effectivePenalty",
       "claim": "Cycle estimate multiplies the flat miss penalty by (1 - hideFactor); useless prefetches add 2 cycles each on top.",
-      "realWorldBasis": "FICTIONAL COUPLING CONSTANT: real penalty reduction depends on memory-level parallelism, timing overlap, and queue occupancy — none modeled. The 0.9/0.8 numbers encode 'mostly helpful, capped' intuition only. Direction (more useful prefetch => faster) is safe; magnitudes are not hardware claims. Do not let any UI text quote cycle counts as physical.",
+      "realWorldBasis": "FICTIONAL COUPLING CONSTANT: real penalty reduction depends on memory-level parallelism, timing overlap, and queue occupancy — none modeled. The 0.9/0.8 numbers encode 'mostly helpful, capped' intuition only. Direction is CONDITIONAL in reality: bandwidth saturation, cache pollution from useless prefetches, and queue pressure can make MORE prefetching slower, a relationship this model cannot express. Never quote cycle counts as physical; never teach 'useful prefetch always helps'.",
       "provenance": "pedagogical-fiction",
       "confidence": "direction-only",
       "affectsChannels": ["perf-counters", "prefetch-off-run"],
-      "diagnosticHeuristicTrained": "more useful prefetching => faster; disabling prefetch helps only when prefetching was hurting",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "within this model, more useful prefetching => faster; the REVERSE (prefetching hurts) occurs on real hardware under bandwidth/pollution pressure and is out of model scope",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — heuristic made conditional; reversal conditions named." }
     },
     {
       "id": "flat-miss-penalty",
       "title": "Every miss costs 120 cycles; coherence transfer costs 90 cycles",
       "kernel": "analyze.ts CYCLE_MODEL",
       "claim": "Additive stall accounting: baseCpi x accesses + hits x 0 + misses x 120 + transfers x 90 (+ prefetch bus cost).",
-      "realWorldBasis": "FICTIONAL CONSTANTS: real penalties vary by level hit in (L2/L3/DRAM), row-buffer state, contention, and overlap (MLP). Flat constants preserve ordering between worlds but make absolute cycle numbers meaningless. Slowdown RATIOS remain directionally defensible within one world's baseline comparison.",
+      "realWorldBasis": "FICTIONAL CONSTANTS: real penalties vary by level hit in (L2/L3/DRAM), row-buffer state, contention, and overlap (MLP) — see Intel Optimization Reference Manual's treatment of multi-level memory behaviour. Flat constants preserve ordering between worlds but absolute cycle numbers are meaningless. The trained heuristic is deliberately restricted: slowdown RATIOS within one world's baseline comparison are directionally defensible; 'fewer misses => proportionally faster' across different workloads is NOT a safe real-world inference because different misses have wildly different costs and overlap.",
       "provenance": "pedagogical-fiction",
       "confidence": "direction-only",
       "affectsChannels": ["perf-counters"],
-      "diagnosticHeuristicTrained": "misses dominate slowdown; fewer misses => proportionally faster (ratio reasoning, not absolute cycles)",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "within a single world, miss-driven slowdown dominates; ratio reasoning vs the baseline only — never cross-workload proportionality",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — proportionality claim restricted to within-world ratio reasoning." }
     },
     {
       "id": "coherence-ledger",
       "title": "Writer alternation on shared lines produces cross-core invalidations; no protocol states",
       "kernel": "sim.ts runCoherence",
       "claim": "Each write to a line last written by the other core counts as one cross-core invalidation; contended-line count and local writes tracked alongside. Same-word conflicts counted independently at word granularity.",
-      "realWorldBasis": "Ledger abstraction over MESI-family protocols. Directionally sound: alternating writers on a shared line DO force ownership transfers. MISSING: upgrade/invalidate distinctions, write-broadcast policies, directory vs snoop latency differences, false sharing via DMA/peripheral. Same-word tracking is the true/false-sharing discriminator and mirrors how perf tooling (e.g. c2c-style analysis) attributes HITM events.",
+      "realWorldBasis": "Ledger abstraction over MESI-family protocols. Directionally sound: alternating writers on a shared line DO force ownership transfers, and line-granular contention is exactly the class Linux perf c2c is designed to expose. IMPORTANT CALIBRATION: this synthetic ledger is an ATTRIBUTION abstraction, not literal hardware protocol evidence — real c2c/HITM analysis is cache-line oriented and protocol-aware (MESI states, directory vs snoop), whereas our word-level tracking is a diagnostic device. MISSING entirely: upgrade/invalidate distinctions, write-broadcast policies, DMA/peripheral-induced invalidation. Same-word tracking is what makes true/false sharing separable in generated worlds.",
       "provenance": "deliberate-simplification",
       "confidence": "medium-high",
       "affectsChannels": ["coherence-probe"],
-      "diagnosticHeuristicTrained": "cross-core traffic present + high same-word share => true sharing; low share => false sharing",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "cross-core traffic present + high same-word share => true sharing; low share => false sharing (attribution heuristic within the model, to be confirmed by line-level tooling on real systems)",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — HITM 'mirrors' softened to attribution analogy; c2c is line-oriented." }
     },
     {
       "id": "same-word-share-threshold",
       "title": "Same-word conflicts > 80% of cross-core invalidations => classify as TRUE sharing",
       "kernel": "plugin.ts solver + observeAction(coherence-probe)",
-      "claim": "True sharing (both cores writing the SAME word) shows mostly same-word conflicts; false sharing (different words, one line) shows mostly different-word conflicts. Threshold 0.8 separates them in generated worlds.",
-      "realWorldBasis": "Directionally defensible attribution heuristic mirroring HITM-style analysis. CAVEAT: real workloads mix both modes on the same line; a hard 0.8 boundary does not exist in reality. Trained heuristic is safe ONLY for clean-mode cases; learners should be told real traces are messier.",
+      "claim": "True sharing (both cores writing the SAME word) shows mostly same-word conflicts; false sharing (different words, one line) shows mostly different-word conflicts. The 80% boundary is a GENERATED-WORLD SEPARATOR chosen so worlds are solvable — there is NO universal 80% threshold on real hardware, and real workloads routinely mix both modes on one line.",
+      "realWorldBasis": "Directionally defensible attribution heuristic mirroring HITM-style analysis. CAVEAT: real traces are messy — mixed-mode lines, multiple sharers, and sampling artifacts mean real analysis looks at distributions across lines, not a single-line binary. Learners should treat the clean 0/80/100 splits seen here as lab conditions that rarely occur in production profiles.",
       "provenance": "deliberate-simplification",
       "confidence": "medium",
       "affectsChannels": ["coherence-probe"],
-      "diagnosticHeuristicTrained": "same-word share decides which sharing pathology",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "same-word share decides which sharing pathology — VALID ONLY for clean-mode cases; expect mixed evidence in real profiles",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — 80% labelled purely a generated-world separator." }
     },
     {
       "id": "hierarchy-independent-walks",
-      "title": "Two-level hierarchy: per-level miss rates computed as independent runs over the same stream",
-      "kernel": "sim.ts runHierarchy/estimateCyclesHierarchy",
-      "claim": "L1 and L2 statistics come from separate simulations, like reading separate hardware counter groups. No inclusion/exclusion policy between levels.",
-      "realWorldBasis": "Matches how real per-level counters are READ (independent domains), but real hierarchies couple: L2 accesses = f(L1 misses), inclusion forces evictions downward. Our L2 miss counts understate real ones for inclusive designs. Hierarchy-mismatch worlds rely on footprint-vs-L1-size reasoning, which survives the simplification; absolute L2 rates do not.",
+      "title": "Two-level hierarchy: TRUE conditional walk — L2 sees only L1's demand misses",
+      "kernel": "sim.ts runHierarchy + analyze.ts (hierarchy stats)",
+      "claim": "The stream enters L1; only L1 demand misses are presented to L2, so L2's access count and miss rate are CONDITIONAL on L1 behaviour, as in a real inclusive hierarchy. (Pre-review retune, implemented 2026-08: replaces the earlier independent same-stream runs that presented counterfactual cache sizes as hierarchy levels.)",
+      "realWorldBasis": "Causally correct traffic direction: lower levels see higher-level misses. DISCLOSED RESIDUAL SIMPLIFICATION: a real inclusive hierarchy also forwards EVICTED lines downward (back-invalidation) and applies inclusion policy; this walk forwards demand misses only, so L2 miss counts can understate inclusive-design reality. Absolute per-level rates are model quantities; the QUALITATIVE reading (misses migrate to the level whose size the working set approaches) is the defensible part.",
       "provenance": "deliberate-simplification",
-      "confidence": "medium",
+      "confidence": "medium-high",
       "affectsChannels": ["cache-params", "perf-counters"],
       "diagnosticHeuristicTrained": "working set near/above a level's size => misses migrate to that level",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: RETUNE — was the sole causal blocker; substantive code retune implemented and verified (conditional L2 accesses = L1 miss count). Human confirmation still required." }
     },
     {
       "id": "benign-twin-baseline",
-      "title": "Slowdown measured against a known-good twin workload, not a saved profile",
+      "title": "Slowdown measured against a known-good twin workload — a LAB CONSTRUCT, not a production baseline",
       "kernel": "analyze.ts benignStats/benignCycles; construct.ts benign recipes",
       "claim": "Each world embeds a healthy variant of the same workload shape; slowdown = regressed cycles / benign cycles. Baseline miss rate typically 3–7%.",
-      "realWorldBasis": "Methodological simplification presented as fact: real regression triage compares against historical profiles of THE SAME binary, not a synthetic twin. Pedagogically this trains correct before/after reasoning but should be disclosed as a lab artifact — real baselines drift (data changes, load changes) and that difference matters in practice.",
+      "realWorldBasis": "Methodological simplification presented as fact: real regression triage compares against historical profiles of THE SAME binary, which drift (data changes, load changes, co-tenancy) and are rarely clean twins. The compare-before-concluding lesson transfers; the existence of a pristine reference does not. Learner-facing material must label the twin as a lab construct.",
       "provenance": "pedagogical-fiction",
       "confidence": "methodology-disclosed",
       "affectsChannels": ["perf-counters", "prefetch-off-run"],
-      "diagnosticHeuristicTrained": "compare current against a known-good reference before concluding regression",
-      "smeReview": { "verdict": "PENDING", "reviewerNote": null }
+      "diagnosticHeuristicTrained": "compare current against a known-good reference before concluding regression (reference quality varies in production — the clean twin here is a lab convenience)",
+      "smeReview": { "verdict": "PENDING", "reviewerNote": "AI pre-review: REWORD applied — twin explicitly labelled lab construct." }
     },
     {
       "id": "windows-share-state",

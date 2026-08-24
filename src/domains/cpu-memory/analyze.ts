@@ -11,6 +11,7 @@ import {
   runCacheStream,
   runCacheStreamWindows,
   runCoherence,
+  runHierarchy,
   runPrefetch,
   setSkew,
   type CacheGeometry,
@@ -207,10 +208,20 @@ export function analyze(h: CpuMemoryHidden): Analysis {
   };
 
   if (h.secondLevel) {
-    const l2Stats = runCacheStream(addrs, h.secondLevel);
+    // SME RETUNE (hierarchy-independent-walks): L2 statistics now come from
+    // a TRUE hierarchical walk — L2 sees only L1's demand misses — instead
+    // of an independent same-stream run. l2MissRate is therefore conditional
+    // on L1 behaviour, as in a real inclusive hierarchy.
+    const walk = runHierarchy(
+      addrs,
+      [
+        { name: "L1", geometry: h.geometry, hitPenaltyCycles: 0 },
+        { name: "L2", geometry: h.secondLevel, hitPenaltyCycles: 0 },
+      ],
+    );
     base.hierarchy = {
       l1MissRate: base.missRate,
-      l2MissRate: l2Stats.accesses === 0 ? 0 : l2Stats.misses / l2Stats.accesses,
+      l2MissRate: walk.levels[1]!.accesses === 0 ? 0 : walk.levels[1]!.misses / walk.levels[1]!.accesses,
     };
   }
   return base;

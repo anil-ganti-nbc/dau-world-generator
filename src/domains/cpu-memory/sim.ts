@@ -170,29 +170,34 @@ export function runHierarchy(
   addrs: number[],
   levels: CacheLevel[],
 ): HierarchyStats {
-  // Simulate inclusion by walking levels in order with independent caches.
-  const caches = levels.map((lvl) => new SetAssocLru(lvl.geometry));
-  const distinct = new Set<number>();
-  for (const a of addrs) distinct.add(Math.floor(a / levels[0]!.geometry.lineSizeBytes));
-  void caches;
-  void distinct;
-
-  // Per-level independent runs give per-level miss rates; a true inclusive
-  // walk would correlate them, but for our evidence purposes per-level rates
-  // computed on the same stream are the honest measurable quantity
-  // (hardware counters are also per-level aggregates).
-  const perLevel = levels.map((lvl) => {
-    const stats = runCacheStream(addrs, lvl.geometry);
-    return {
-      name: lvl.name,
+  // TRUE HIERARCHICAL WALK (SME retune of hierarchy-independent-walks):
+  // each level receives only the misses of the level above, so lower-level
+  // traffic is CONDITIONAL on higher-level behaviour — exactly how a real
+  // inclusive hierarchy passes demand traffic downward. Per-level rates are
+  // therefore causally correlated, not independent counterfactual runs.
+  //
+  // Disclosed simplification: a real inclusive hierarchy also forwards
+  // EVICTED lines downward (back-invalidation); this walk forwards demand
+  // misses only. Recorded in the rule inventory.
+  const perLevel: HierarchyStats["levels"] = [];
+  let current = addrs;
+  for (let i = 0; i < levels.length; i++) {
+    const cache = new SetAssocLru(levels[i]!.geometry);
+    for (const a of current) cache.access(a);
+    const stats = cache.getStats();
+    perLevel.push({
+      name: levels[i]!.name,
       accesses: stats.accesses,
       hits: stats.hits,
       misses: stats.misses,
       missRate: stats.accesses === 0 ? 0 : stats.misses / stats.accesses,
       missesPerSet: stats.missesPerSet,
       evictions: stats.evictions,
-    };
-  });
+    });
+    if (i < levels.length - 1) {
+      current = missAddressesOf(current, levels[i]!.geometry);
+    }
+  }
   const top = perLevel[perLevel.length - 1]!;
   return {
     levels: perLevel,
@@ -200,6 +205,18 @@ export function runHierarchy(
     distinctLines: top.misses > 0 ? Object.values(top.missesPerSet).reduce((a, b) => a + b, 0) : 0,
     memoryMisses: top.misses,
   };
+}
+
+/** Addresses that MISS in one pass through a cache with `geo`. */
+function missAddressesOf(addrs: number[], geo: CacheGeometry): number[] {
+  const cache = new SetAssocLru(geo);
+  const out: number[] = [];
+  for (const addr of addrs) {
+    const before = cache.getStats().misses;
+    cache.access(addr);
+    if (cache.getStats().misses > before) out.push(addr);
+  }
+  return out;
 }
 
 /** Cycle estimate across a hierarchy: sum of per-level hits × that level's penalty. */

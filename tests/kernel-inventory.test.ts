@@ -108,10 +108,28 @@ describe("kernel-rule inventory (SME gate)", () => {
       assert.ok(inventory.smeGate.reviewer, "SIGNED_OFF requires a named reviewer");
     } else {
       assert.notEqual(inventory.smeGate.verdict, "SIGNED_OFF", "gate verdict contradicts inventory status");
+      assert.ok(inventory.smeGate.reviewer === null,
+        "no human sign-off has occurred — smeGate.reviewer must stay null until a HUMAN reviews (an AI must never self-certify)");
     }
-    // Current truth: nothing has been certified.
-    assert.equal(inventory.status, "PENDING_SME_REVIEW");
+    // Current truth: pre-review applied changes; human confirmation pending.
+    assert.ok(["PENDING_SME_REVIEW", "IN_REVIEW"].includes(inventory.status),
+      `unexpected status ${inventory.status}`);
+    // Every rule stays PENDING until a HUMAN sets verdicts. AI dispositions
+    // are recorded in technicalPreReview / prereview file, never in smeReview.
     assert.equal(pending, inventory.rules.length);
+    const pre = JSON.parse(readFileSync("schemas/kernel-rules.cpu-memory.prereview.json", "utf-8")) as {
+      reviewerKind: string;
+      tally: { pass: number; reword: number; retune: number; remove: number };
+      dispositions: Array<{ id: string; verdict: string }>;
+    };
+    assert.equal(pre.reviewerKind, "AI_PRE_REVIEW");
+    assert.equal(pre.dispositions.length, inventory.rules.length, "pre-review must cover every rule");
+  });
+
+  it("the retuned hierarchy rule documents its implemented conditional walk", () => {
+    const hier = inventory.rules.find((r) => r.id === "hierarchy-independent-walks")!;
+    assert.match(hier.claim, /CONDITIONAL/i, "claim must describe the conditional walk");
+    assert.match(hier.realWorldBasis, /back-invalidation|evicted lines/i, "residual simplification must be disclosed");
   });
 
   it("documents what is NOT modelled (reviewers confirm this list)", () => {
