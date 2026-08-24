@@ -94,8 +94,8 @@ describe("world generator core", () => {
         );
       }
     }
-    // All four causes should appear across 60 seeds (uniform-ish pick).
-    assert.equal(Object.keys(byCause).length, 4, `cause coverage over seeds: ${JSON.stringify(byCause)}`);
+    // All six solver-supported causes should appear across 60 seeds.
+    assert.ok(Object.keys(byCause).length >= 6, `cause coverage over seeds: ${JSON.stringify(byCause)}`);
   });
 
   it("partial evidence paths do not solve (no lucky single probe)", () => {

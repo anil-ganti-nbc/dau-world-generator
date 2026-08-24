@@ -12,10 +12,19 @@ import {
   runCoherence,
   runPrefetch,
   setSkew,
-  hitConcentration,
   setIndexOf,
+  type CacheGeometry,
 } from "../src/domains/cpu-memory/sim.ts";
-import type { CacheGeometry } from "../src/domains/cpu-memory/sim.ts";
+
+/** Local copy of the churn metric (lives in analyze.ts for evidence code). */
+function hitConcentration(stats: ReturnType<typeof runCacheStream>): { ratio: number; topTag: string | null } {
+  const entries = Object.entries(stats.hotTagHits);
+  if (entries.length === 0) return { ratio: 1, topTag: null };
+  const sorted = entries.sort((a, b) => b[1] - a[1]);
+  const max = sorted[0]![1];
+  const median = sorted.length >= 3 ? (sorted[Math.floor(sorted.length / 2)] as [string, number])[1] : Math.min(max, 1);
+  return { ratio: max / Math.max(1, median), topTag: sorted[0]![0] };
+}
 
 const GEO_16K_2WAY: CacheGeometry = { sizeBytes: 16 * 1024, lineSizeBytes: 64, associativity: 2 };
 

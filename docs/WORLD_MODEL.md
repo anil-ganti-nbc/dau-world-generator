@@ -35,20 +35,22 @@ WorldSpec
 **Hypotheses are first-class.** Each carries `label`, `detail` (mechanism),
 and `isTrue`. Exactly one true hypothesis is a structural invariant; ≥2
 distractors above band 1. Distractors must be *defensible from the briefing*
-(that is what forces investigation) and *refutable from evidence* (that is
-what makes the world solvable).
+(that is what forces investigation). v0.2 adds an optional `unrefutable`
+flag: when a distractor shares the truth's evidence signature and no probe
+in the world can exclude it, the world declares that honestly instead of
+pretending refutation.
 
 **SolutionModel is an evidence contract, not just an answer.**
-`solution.discriminatingActions` names the actions whose combined evidence
-identifies the cause. Validation runs the independent solver along exactly
-this path and refuses worlds where it fails — or where a strict prefix of the
-path already gives the answer away.
+`solution.discriminatingActions` names actions whose combined evidence
+identifies the cause. Validation runs the independent solver along this path,
+refuses worlds where it fails — or where a strict prefix already gives the
+answer away — and additionally enumerates alternative solving subsets so the
+number of valid investigation strategies is a measured property.
 
 **Hidden state is sealed by convention + schema position, not encryption.**
-The UI layer receives the whole spec (it needs `hidden.causeId`-adjacent data
-through the plugin's observe/explain calls anyway). The rule is enforced by
-review and by the UI's structure: no render path touches `spec.hidden`.
-Server-side hosting could seal it later without schema change.
+The UI layer receives the whole spec. The rule is enforced by review and by
+the UI's structure: no render path touches `spec.hidden`. Server-side hosting
+could seal it later without schema change.
 
 **DifficultyProfile replaces Easy/Medium/Hard.**
 
@@ -61,9 +63,8 @@ observability         fraction of truth-relevant variables directly observable
 minInvestigations     probes a competent solver needs (lower bound on cost)
 ```
 
-Generation maps band → structural choices (see DIFFICULTY_MODEL.md); the
-profile records what was actually built, so validation can check claims
-against reality rather than trusting the generator's self-report.
+Generation maps band → structural choices; validation checks claims against
+the built spec rather than trusting the generator's self-report.
 
 ## Concept references
 
@@ -78,41 +79,35 @@ concept ids; a new concept requires a curriculum PR first.
 
 ## Example (abridged golden fixture)
 
+See `fixtures/worlds/*.json` — one per solver-supported family at bands 2
+and 4, pinned byte-for-byte to their seeds. Abridged shape:
+
 ```jsonc
 {
   "schemaVersion": 1,
   "templateId": "cpu-memory/regression-diagnosis",
   "title": "Same Code, Different Machine",
   "domainId": "cpu-memory",
-  "seed": "golden-conflict-01",
+  "seed": "golden-false-sharing-2-5",
   "concepts": [
-    { "id": "cpu-cache-levels", "tier": 2 },
-    { "id": "cpu-cache-miss", "tier": 2 }
+    { "id": "cpu-coherency", "tier": 2 },
+    { "id": "cpu-mesi", "tier": 3 }
   ],
-  "prerequisiteConceptIds": ["cpu-cache-levels"],
-  "objective": "Diagnose why the hot loop regressed …",
   "difficulty": {
-    "band": 3, "relevantVariables": 7, "distractorHypotheses": 3,
-    "causalDepth": 2, "observability": 0.75, "minInvestigations": 2
+    "band": 2, "relevantVariables": 4, "distractorHypotheses": 2,
+    "causalDepth": 1, "observability": 0.69, "minInvestigations": 2
   },
-  "briefing": "A routine profiling pass shows the hot loop of your
-    index-compactor service has regressed measurably since yesterday…",
-  "hidden": { "causeId": "conflict-miss", "parameters": { "…": "geometry, address streams" } },
-  "actions": [ { "id": "perf-counters", "kind": "measure", "…": "…" }, "…" ],
-  "hypotheses": [
-    { "id": "capacity-miss",   "label": "Working set exceeds cache", "isTrue": false, "…": "…" },
-    { "id": "conflict-miss",   "label": "Cache set conflicts",       "isTrue": true,  "…": "…" },
-    { "id": "false-sharing",   "label": "False sharing",             "isTrue": false, "…": "…" }
-  ],
+  "briefing": "A routine profiling pass shows the hot loop … regressed …",
+  "hidden": { "causeId": "false-sharing", "parameters": { "…": "geometry + workload phases" } },
+  "actions": [ { "id": "perf-counters", "kind": "measure" }, "…" ],
+  "hypotheses": [ { "id": "capacity-miss", "isTrue": false }, { "id": "false-sharing", "isTrue": true }, "…" ],
   "solution": {
-    "correctHypothesisId": "conflict-miss",
-    "discriminatingActions": ["perf-counters", "set-distribution"],
-    "explanation": "The new layout maps the hottest lines onto one cache set…"
+    "correctHypothesisId": "false-sharing",
+    "discriminatingActions": ["perf-counters", "coherence-probe"],
+    "explanation": "Two cores write different variables that share one cache line…"
   }
 }
 ```
-
-Full pinned examples: `fixtures/worlds/*.json`.
 
 ## What deliberately did NOT make v1
 

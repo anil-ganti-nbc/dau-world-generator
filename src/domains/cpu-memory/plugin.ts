@@ -1,522 +1,646 @@
+/**
+ * cpu-memory domain plugin (v2).
+ *
+ * 12 causal families × structural variants, geometry/policy variation,
+ * multi-path investigation, operational difficulty, probe budgets.
+ *
+ * Laws preserved from v0.1:
+ *  - all evidence derives from simulation kernels over hidden state;
+ *  - the solver sees learner-visible observations only;
+ *  - generate() never calls solve(); validation proves solvability.
+ */
+
 import type { DomainPlugin, CauseDescriptor, GenerateInput, GeneratedWorldContent } from "../../core/plugin";
 import type { DifficultyProfile, Hypothesis, Observation, WorldAction, WorldSpec } from "../../core/types";
-import type { ConceptRef } from "../../core/concepts";
 import { Rng } from "../../core/rng";
-import {
-  DEFAULT_CYCLE_MODEL,
-  estimateCycles,
-  runCacheStream,
-  runCacheStreamWindows,
-  runCoherence,
-  runPrefetch,
-  hitConcentration,
-  setSkew,
-  type CacheGeometry,
-  type CoherenceStats,
-} from "./sim";
+import { FAMILIES, family, separableAlternatives, SOLVER_SUPPORTED, SIGNATURE_CLASS, type FamilyDef, type FamilyId } from "./families";
+import { VARIANTS, buildHidden } from "./construct";
+import { analyze } from "./analyze";
+import type { CpuMemoryHidden } from "./hidden";
+import type { CacheGeometry } from "./sim";
 
 export const DOMAIN_ID = "cpu-memory";
-export const DOMAIN_VERSION = "1.0.0";
+export const DOMAIN_VERSION = "2.0.0";
 export const TEMPLATE_ID = "regression-diagnosis";
 
-const CAUSES: CauseDescriptor[] = [
-  { id: "conflict-miss", label: "Cache set conflicts", mechanism: "The new layout maps the hottest lines onto one cache set; associativity cannot hold them, so every pass evicts the line the next iteration needs." },
-  { id: "capacity-miss", label: "Working set exceeds cache", mechanism: "The active data now exceeds total cache size, so each sweep over it evicts lines still needed on the next sweep." },
-  { id: "false-sharing", label: "False sharing between cores", mechanism: "Two cores write different variables that share one cache line; ownership ping-pongs and every write pays a coherence transfer." },
-  { id: "prefetch-storm", label: "Useless prefetch traffic", mechanism: "The access order defeats the next-line prefetcher; its issued lines are never demanded and crowd real misses on the bus." },
-];
-
-/** Hidden parameters for one generated world. */
-interface CpuMemoryHidden {
-  geometry: CacheGeometry;
-  /** Byte addresses forming the regressed loop's stream. */
-  addrs: number[];
-  /** The same loop as it ran in the known-good build (healthy locality). */
-  benignAddrs: number[];
-  /** Interleaved writer sequence (false-sharing worlds only). */
-  writes?: Array<{ core: 0 | 1; addr: number }>;
-  cycleModel: typeof DEFAULT_CYCLE_MODEL;
+/** Evidence actions. Costs are in abstract "rerun" units (probe budget). */
+interface ActionDef extends WorldAction {
+  cost: number;
 }
 
-const CONCEPT_TIERS: Record<string, number> = {
-  "cpu-cache-miss": 2,
-  "cpu-cache-levels": 2,
-  "cpu-write-policy": 2,
-  "cpu-coherency": 2,
-  "cpu-prefetch": 3,
-  "cpu-mesi": 3,
-};
+const ACTIONS: ActionDef[] = [
+  { id: "perf-counters", kind: "measure", label: "Read perf counters", description: "Cycle estimates: current build vs known-good baseline.", cost: 1 },
+  { id: "cache-params", kind: "inspect", label: "Dump cache configuration", description: "Size / line / associativity of each level.", cost: 0 },
+  { id: "miss-timeline", kind: "measure", label: "Miss-rate timeline", description: "Miss rate across eight windows of the run.", cost: 1 },
+  { id: "set-distribution", kind: "measure", label: "Set & line analysis", description: "Where misses land across sets; churn among hot lines; locality metrics.", cost: 1 },
+  { id: "coherence-probe", kind: "measure", label: "Coherence probe", description: "Cross-core invalidations vs local writes; same-word conflicts.", cost: 1 },
+  { id: "prefetch-audit", kind: "measure", label: "Prefetch audit", description: "Prefetches issued vs used under current policy.", cost: 1 },
+  { id: "prefetch-off-run", kind: "run", label: "Rerun with prefetcher off", description: "Counterfactual: same workload, prefetching disabled.", cost: 2 },
+];
+
+const ACTION_BY_ID = new Map(ACTIONS.map((a) => [a.id, a]));
+
+function toWorldAction(a: ActionDef): WorldAction {
+  return { id: a.id, kind: a.kind, label: a.label, description: a.description };
+}
+
+const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+
+// ---------------------------------------------------------------------------
+// Observation synthesis
+// ---------------------------------------------------------------------------
+
+function observeAction(h: CpuMemoryHidden, actionId: string): Observation | null {
+  const a = analyze(h);
+
+  switch (actionId) {
+    case "perf-counters":
+      return {
+        actionId,
+        summary: `Cycle estimate ${a.slowdown.toFixed(2)}× the known-good baseline (${pct(a.missRate)} vs ${pct(a.benignMissRate)} L1 miss rate).`,
+        readings: [
+          { name: "estimated slowdown", value: `${a.slowdown.toFixed(2)}x` },
+          { name: "L1 miss rate", value: pct(a.missRate) },
+          { name: "baseline L1 miss rate", value: pct(a.benignMissRate) },
+        ],
+      };
+    case "cache-params": {
+      const g = h.geometry;
+      const readings = [
+        { name: "L1 size", value: `${g.sizeBytes / 1024} KiB` },
+        { name: "line size", value: `${g.lineSizeBytes} B` },
+        { name: "associativity", value: `${g.associativity}-way` },
+      ];
+      if (h.secondLevel) {
+        readings.push(
+          { name: "L2 size", value: `${h.secondLevel.sizeBytes / 1024} KiB` },
+          { name: "L2 assoc", value: `${h.secondLevel.associativity}-way` },
+        );
+      }
+      return { actionId, summary: "Effective cache configuration.", readings };
+    }
+    case "miss-timeline": {
+      const first = a.windows[0] as number;
+      const last = a.windows[a.windows.length - 1] as number;
+      const flat = a.windows.every((w) => Math.abs(w - (first as number)) < 0.05);
+      const shape = flat ? "flat" : last > first * 2 ? "rising" : last < first * 0.5 ? "falling" : "bursty";
+      const readings: Observation["readings"] = [
+        { name: "miss rate", value: pct(a.missRate) },
+        { name: "shape", value: shape },
+        { name: "windows %", value: a.windows.map((w) => String(Math.round(w * 100))).join(" ") },
+        { name: "distinct lines touched", value: String(a.stats.distinctLines) },
+      ];
+      // Phase-aware windows: when phases exist, report per-window phase labels
+      // and their miss rates (one shared cache across phases, like reality).
+      if (h.workload.phases.length > 1 && a.phaseWindowRates.length > 0) {
+        readings.push(
+          { name: "phase window labels", value: a.phaseLabels.join(" ") },
+          {
+            name: "phase window miss %",
+            value: a.phaseWindowRates.map((r) => String(Math.round(r * 100))).join(" "),
+          },
+        );
+      }
+      // A single-phase workload excludes the phase-change hypothesis; a
+      // multi-phase one with distinct per-window behaviour is the
+      // phase-change signature itself.
+      const discriminates = h.workload.phases.length === 1 ? ["phase-change"] : undefined;
+      return {
+        actionId,
+        summary: `L1 miss profile is ${shape}: ${a.windows.map((w) => Math.round(w * 100)).join(" ")}% per window.`,
+        readings,
+        discriminatesAgainst: discriminates,
+      };
+    }
+    case "set-distribution": {
+      const activeSets = Object.keys(a.stats.missesPerSet).length;
+      const concentrated = a.setSkew > 3;
+      const spread = a.setSkew <= 1.5 && activeSets > 16;
+      const summary = concentrated
+        ? `Misses concentrate on one set (${a.setSkew.toFixed(1)}× the median active set); reuse factor ${a.locality.reuseFactor.toFixed(1)}.`
+        : spread
+          ? `First-touch misses spread evenly across ${activeSets} sets; reuse factor ${a.locality.reuseFactor.toFixed(1)}, temporal reuse ${pct(a.locality.temporalReuseRate)}.`
+          : `Mixed footprint: skew ${a.setSkew.toFixed(1)}× across ${activeSets} sets; gap pattern ${a.gapPattern}.`;
+      // Concentration excludes every cold-class hypothesis (they all
+      // spread misses across the cache). Any low-skew profile excludes
+      // both conflict families (their whole signature is concentration).
+      // The gap pattern separates the streaming families — but only at
+      // the extremes: contiguous walking excludes spatial loss, scattered
+      // jumping excludes churn. Short strides are ambiguous, so neither.
+      const discriminatesAgainst =
+        concentrated
+          ? ["capacity-miss", "compulsory-miss-surge", "spatial-locality-loss", "temporal-locality-loss", "hierarchy-mismatch"]
+          : (() => {
+              const out = ["conflict-miss", "associativity-cliff"];
+              if (a.gapPattern === "contiguous") {
+                out.push("spatial-locality-loss");
+              } else if (a.gapPattern === "scatter" || a.gapPattern === "long-stride") {
+                out.push("compulsory-miss-surge", "capacity-miss", "hierarchy-mismatch");
+              }
+              return out;
+            })();
+      return {
+        actionId,
+        summary,
+        readings: [
+          { name: "set skew max/median", value: `${a.setSkew.toFixed(1)}x` },
+          { name: "active sets", value: String(activeSets) },
+          { name: "reuse factor", value: a.locality.reuseFactor.toFixed(1) },
+          { name: "temporal reuse", value: pct(a.locality.temporalReuseRate) },
+          { name: "footprint ratio", value: a.locality.footprintRatio.toFixed(2) },
+          { name: "mean access gap (lines)", value: a.meanGapLines.toFixed(1) },
+          { name: "gap pattern", value: a.gapPattern },
+          { name: "evictions", value: String(a.stats.evictions) },
+        ],
+        discriminatesAgainst,
+      };
+    }
+    case "coherence-probe": {
+      if (!a.coherence || a.coherence.crossCoreInvalidations === 0) {
+        return {
+          actionId,
+          summary: "No inter-core write sharing detected in this workload.",
+          readings: [{ name: "cross-core invalidations", value: "0" }],
+          discriminatesAgainst: ["false-sharing", "true-sharing"],
+        };
+      }
+      const c = a.coherence;
+      const trueShare = c.sameWordConflicts > c.crossCoreInvalidations * 0.8;
+      return {
+        actionId,
+        summary: trueShare
+          ? `Heavy coherence traffic on genuinely shared data: ${c.crossCoreInvalidations} transfers, ${c.sameWordConflicts} on the SAME word.`
+          : `Coherence ping-pong between adjacent words: ${c.crossCoreInvalidations} transfers across ${c.contendedLines} line(s), same-word conflicts only ${c.sameWordConflicts}.`,
+        readings: [
+          { name: "cross-core invalidations", value: String(c.crossCoreInvalidations) },
+          { name: "contended lines", value: String(c.contendedLines) },
+          { name: "same-word conflicts", value: String(c.sameWordConflicts) },
+          { name: "local writes", value: String(c.localWrites) },
+        ],
+        discriminatesAgainst: trueShare ? ["false-sharing"] : ["true-sharing"],
+      };
+    }
+      case "prefetch-audit": {
+        const pf = a.prefetchNow;
+        const defeated = pf.usefulFraction < 0.35 && pf.issued > 200;
+        const helpful = pf.usefulFraction >= 0.5 && pf.issued > 100;
+        const quiet = pf.issued < Math.max(50, a.stats.distinctLines * 0.3);
+        const summary = defeated
+          ? `Prefetcher issued ${pf.issued} lines, useful fraction ${pct(pf.usefulFraction)} — bus crowded with dead prefetches.`
+          : helpful
+            ? `Prefetcher healthy: issued ${pf.issued}, useful fraction ${pct(pf.usefulFraction)}.`
+            : quiet
+              ? `Prefetcher barely issuing (${pf.issued} prefetches against ${a.stats.distinctLines} distinct lines) — pattern defeats it entirely.`
+              : `Prefetcher mixed: issued ${pf.issued}, useful fraction ${pct(pf.usefulFraction)}.`;
+        // Healthy prefetching excludes both prefetch pathologies; a defeated
+        // one excludes "healthy capacity streaming" (capacity worlds have a
+        // helpful prefetcher on contiguous sweeps). The gap pattern of the
+        // defeated/quiet pattern separates churn (contiguous) from spatial
+        // loss (scatter/stride).
+        let discriminates: string[] | undefined;
+        if (helpful) discriminates = ["prefetch-storm", "prefetch-starved"];
+        else if (defeated || quiet) {
+          discriminates = ["capacity-miss"];
+          if (a.gapPattern === "scatter" || a.gapPattern === "long-stride") {
+            discriminates.push("compulsory-miss-surge");
+          } else if (a.gapPattern === "contiguous") {
+            discriminates.push("spatial-locality-loss");
+          }
+          // Zero useful fraction with zero reuse means every line was
+          // touched exactly once — the spatial-loss signature itself.
+          // (Churn worlds stream contiguously and the prefetcher helps
+          // them, so a defeated prefetcher on zero-reuse data excludes it.)
+          if (a.locality.reuseFactor <= 1.05 && a.locality.temporalReuseRate < 0.02) {
+            discriminates.push("temporal-locality-loss", "compulsory-miss-surge");
+          }
+        }
+        // Coherence worlds (tiny resident read set) have short-stride gaps
+        // and a defeated prefetcher — they must not be misread as spatial
+        // loss. The coherence probe is the authority there: when cross-core
+        // traffic exists, cold-class hypotheses are excluded.
+        if (a.coherence && a.coherence.crossCoreInvalidations > 0) {
+          discriminates = [
+            ...(discriminates ?? []).filter((id) => id !== "spatial-locality-loss"),
+            "compulsory-miss-surge",
+            "capacity-miss",
+            "spatial-locality-loss",
+          ];
+        }
+        // Phase-change worlds: the timeline shows distinct phase windows.
+        // That evidence excludes single-phase families entirely (conflict,
+        // churn, spatial loss, temporal loss, capacity, coherence).
+        if ((h.workload.phases.length ?? 1) > 1) {
+          const before = new Set(discriminates ?? []);
+          for (const id of [
+            "conflict-miss",
+            "compulsory-miss-surge",
+            "spatial-locality-loss",
+            "temporal-locality-loss",
+            "capacity-miss",
+            "false-sharing",
+            "true-sharing",
+          ]) {
+            before.add(id);
+          }
+          discriminates = [...before];
+        }
+        return {
+          actionId,
+          summary,
+          readings: [
+            { name: "prefetches issued", value: String(pf.issued) },
+            { name: "useful fraction", value: pct(pf.usefulFraction) },
+            { name: "bus transactions", value: String(pf.busTransactions) },
+          ],
+          discriminatesAgainst: discriminates,
+        };
+      }
+    case "prefetch-off-run": {
+      const delta = a.prefetchOff.busTransactions - a.prefetchNow.busTransactions;
+      const cyclesDelta = a.cycles - estimateCyclesOff(a);
+      const verdict =
+        Math.abs(cyclesDelta) < a.benignCycles * 0.05
+          ? "no meaningful change — prefetching was not part of the story"
+          : cyclesDelta > 0
+            ? "disabling prefetch makes it WORSE: prefetching was helping"
+            : "disabling prefetch makes it BETTER: prefetching was hurting";
+      void delta;
+      return {
+        actionId,
+        summary: `Counterfactual run with prefetcher off: ${verdict}.`,
+        readings: [
+          { name: "cycles with prefetch", value: String(a.cycles) },
+          { name: "cycles without prefetch", value: String(estimateCyclesOff(a)) },
+          { name: "prefetches issued now", value: String(a.prefetchNow.issued) },
+          { name: "prefetches issued off", value: "0" },
+        ],
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Cycle estimate for the same workload with prefetching disabled. */
+function estimateCyclesOff(
+  a: ReturnType<typeof analyze>,
+): number {
+  // Without prefetch, every demand miss pays full penalty.
+  return Math.round(
+    a.stats.misses * 120 + // CYCLE_MODEL.missPenaltyCycles
+      (a.coherence ? a.coherence.crossCoreInvalidations * 90 : 0),
+  );
+}
+
+function countAddrs(x: unknown): number {
+  const phases = (x as { phases?: Array<{ addrs: number[]; reps: number }> }).phases ?? [];
+  let n = 0;
+  for (const p of phases) n += p.addrs.length * p.reps;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin class
+// ---------------------------------------------------------------------------
 
 export class CpuMemoryDomain implements DomainPlugin {
   readonly domainId = DOMAIN_ID;
   readonly version = DOMAIN_VERSION;
 
   causes(): CauseDescriptor[] {
-    return CAUSES;
+    return FAMILIES.map((f) => ({ id: f.id, label: f.label, mechanism: f.mechanism }));
   }
 
   generate(input: GenerateInput): GeneratedWorldContent {
-    const rng = input.rng.fork("world");
     const band = input.difficultyBand;
+    const rng = input.rng.fork("world");
 
-    const cause = rng.pick(CAUSES);
-    const distractors = CAUSES.filter((c) => c.id !== cause.id);
+    // 1. Truth family: only solver-supported families can be graded truths.
+    const supported = FAMILIES.filter((f) => SOLVER_SUPPORTED.has(f.id));
+    const def = rng.pick(supported) as FamilyDef;
+    const variantLabel = rng.pick(VARIANTS[def.id]);
 
+    const lineSizeBytes = rng.pick([64]);
     const geometry: CacheGeometry = {
       sizeBytes: rng.pick([16 * 1024, 32 * 1024]),
-      lineSizeBytes: 64,
-      associativity: rng.pick([2, 4]),
+      lineSizeBytes,
+      associativity: rng.pick([2, 4, 8]),
     };
+    let secondLevel: CacheGeometry | undefined;
+    if (def.id === "hierarchy-mismatch") {
+      secondLevel = {
+        sizeBytes: geometry.sizeBytes * rng.pick([4, 6]),
+        lineSizeBytes,
+        associativity: Math.min(16, geometry.associativity * 2),
+      };
+    }
 
-    const hidden = this.buildHidden(cause.id, geometry, rng);
-    const actions = this.buildActions();
-    const hypotheses = this.buildHypotheses(cause.id, distractors, band, rng);
-    const difficulty = this.buildDifficulty(band, hypotheses.length - 1);
+    const hidden = buildHidden({ familyId: def.id, variantLabel, geometry, secondLevel, rng });
+
+    // 1b. Honest-truth guard: a spatial-loss world whose pattern defeats
+    // the prefetcher is indistinguishable from a prefetch storm with the
+    // current probe set — such a world must not be a graded spatial truth.
+    // Re-draw (deterministically, same seed stream) until the variant is
+    // separable; the guard keeps the catalogue honest without weakening
+    // validation.
+    if (def.id === "spatial-locality-loss") {
+      const probe = analyze(hidden);
+      const pf = probe.prefetchNow;
+      if (pf.usefulFraction < 0.35) {
+        // fall through to a deterministic re-pick below
+        const alt = FAMILIES.filter((f) => SOLVER_SUPPORTED.has(f.id) && f.id !== "spatial-locality-loss");
+        const altDef = rng.pick(alt) as FamilyDef;
+        const altVariant = rng.pick(VARIANTS[altDef.id]);
+        const altHidden = buildHidden({
+          familyId: altDef.id,
+          variantLabel: altVariant,
+          geometry,
+          secondLevel: altDef.id === "hierarchy-mismatch" ? secondLevel : undefined,
+          rng,
+        });
+        return this.assemble(altDef, altVariant, altHidden, geometry, secondLevel, band, rng);
+      }
+    }
+
+    return this.assemble(def, variantLabel, hidden, geometry, secondLevel, band, rng);
+  }
+
+  /** Shared assembly used by generate() and the honest-truth re-pick path. */
+  private assemble(
+    def: FamilyDef,
+    variantLabel: string,
+    hidden: ReturnType<typeof buildHidden>,
+    geometry: CacheGeometry,
+    secondLevel: CacheGeometry | undefined,
+    band: number,
+    rng: Rng,
+  ): GeneratedWorldContent {
+    // Distractors: plausible AND evidence-separable (different signature
+    // class). Same-class siblings are documented but not graded alternatives.
+    const plausibleIds = separableAlternatives(def.id).filter(
+      (id) => id !== "hierarchy-mismatch" || secondLevel !== undefined,
+    );
+    const distractorCount =
+      band <= 1 ? 1 : band === 2 ? Math.min(2, plausibleIds.length) : Math.min(3, plausibleIds.length);
+    const distractorDefs = rng.sample(plausibleIds, distractorCount).map((id) => family(id));
+
+    const actions = ACTIONS.filter((act) => act.id !== "assoc-halve-run").map(toWorldAction);
+
+    const hypotheses = this.buildHypotheses(def, distractorDefs, rng);
+    const difficulty = this.buildDifficulty(band, hypotheses.length - 1, hidden, actions.length);
 
     return {
       title: this.buildTitle(rng),
-      briefing: this.buildBriefing(geometry, band, rng),
-      concepts: this.conceptsFor(cause.id),
+      briefing: this.buildBriefing(hidden, geometry, secondLevel, band, rng),
+      concepts: def.concepts.map((c) => ({ ...c })),
       prerequisiteConceptIds: ["cpu-cache-levels"],
       objective:
-        "Diagnose why the hot loop regressed by inspecting counters, then commit to exactly one root cause.",
+        "Diagnose why the hot loop regressed by inspecting counters and running counterfactuals, then commit to exactly one root cause.",
       difficulty,
       actions,
       hypotheses,
-      solution: this.buildSolution(cause.id),
-      hidden: { causeId: cause.id, parameters: hidden as unknown as Record<string, unknown> },
+      solution: this.buildSolution(def.id),
+      hidden: { causeId: def.id, parameters: hidden as unknown as Record<string, unknown> },
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Hidden-state construction. Each cause builds an address stream whose REAL
-  // simulation (sim.ts) yields a distinct evidence signature.
-  // -------------------------------------------------------------------------
-
-  private buildHidden(causeId: string, geo: CacheGeometry, rng: Rng): CpuMemoryHidden {
-    const sets = Math.round(geo.sizeBytes / (geo.lineSizeBytes * geo.associativity));
-    const lineBytes = geo.lineSizeBytes;
-    let addrs: number[];
-    let writes: Array<{ core: 0 | 1; addr: number }> | undefined;
-
-    switch (causeId) {
-      case "conflict-miss": {
-        // A handful of DISTINCT hot lines mapping to ONE set (just over
-        // associativity) cycled against a small resident region. Every pass
-        // really evicts the next hot line -> misses pile onto one set while
-        // the rest of the working set stays cached.
-        const setIndex = rng.int(1, sets - 2);
-        const strideWithinSet = sets * lineBytes;
-        const hotLines = geo.associativity + rng.int(1, 2); // just over capacity
-        const hot = Array.from({ length: hotLines }, (_, i) => setIndex * lineBytes + i * strideWithinSet);
-        const residentBase = 0x50_0000;
-        const residentLines = 16;
-        addrs = [];
-        for (let rep = 0; rep < 96; rep++) {
-          for (let i = 0; i < residentLines; i++) {
-            addrs.push(residentBase + i * lineBytes); // healthy region: hits after first pass
-          }
-          for (const h of hot) addrs.push(h); // conflicting set: misses forever
-        }
-        break;
-      }
-      case "capacity-miss": {
-        // Sweep twice-as-many-lines-as-the-cache repeatedly with shifting
-        // phase; misses spread across every set, no line gets reused in time.
-        const totalLines = Math.floor(geo.sizeBytes / lineBytes);
-        const sweepLines = totalLines * 2;
-        const base = rng.int(0, 8) * 4096 + 0x10_0000;
-        addrs = [];
-        for (let rep = 0; rep < 6; rep++) {
-          addrs.push(...Array.from({ length: sweepLines }, (_, i) => base + ((rep * 37 + i) % sweepLines) * lineBytes));
-        }
-        break;
-      }
-      case "false-sharing": {
-        // Two counters in one line, written alternately by two cores. The
-        // loop's own reads are small and well cached: regression is pure
-        // coherence traffic.
-        const lineBase = rng.int(0, 1023) * lineBytes + 0x20_0000;
-        writes = [];
-        for (let i = 0; i < 512; i++) {
-          const core: 0 | 1 = i % 2 === 0 ? 0 : 1;
-          writes.push({ core, addr: lineBase + (core === 0 ? 0 : 32) });
-        }
-        const readBase = 0x30_0000 + rng.int(0, 64) * lineBytes;
-        addrs = [];
-        for (let rep = 0; rep < 32; rep++) {
-          for (let i = 0; i < 8; i++) addrs.push(readBase + i * lineBytes);
-        }
-        break;
-      }
-      default: {
-        // prefetch-storm: descending walk defeats next-line prefetch; every
-        // access is a distinct line, misses spread evenly across sets, no churn.
-        const stride = -Math.abs(rng.pick([128, 256]));
-        addrs = Array.from({ length: 1024 }, (_, i) => 0x40_0000 + i * stride);
-        break;
-      }
-    }
-
-    // Baseline: the same loop as the known-good build ran it — identical
-    // access count, healthy locality (a small resident window).
-    const benignAddrs = Array.from({ length: addrs.length }, (_, i) => 0x60_0000 + (i % 64) * lineBytes);
-
-    return { geometry: geo, addrs, benignAddrs, writes, cycleModel: DEFAULT_CYCLE_MODEL };
-  }
-
-  private simulate(hidden: CpuMemoryHidden): {
-    stats: ReturnType<typeof runCacheStream>;
-    benignStats: ReturnType<typeof runCacheStream>;
-    coherence: CoherenceStats | null;
-    cycles: number;
-    benignCycles: number;
-    windows: number[];
-    skew: number;
-  } {
-    const stats = runCacheStream(hidden.addrs, hidden.geometry);
-    const benignStats = runCacheStream(hidden.benignAddrs, hidden.geometry);
-    const coherence = hidden.writes ? runCoherence(hidden.writes, hidden.geometry.lineSizeBytes) : null;
-    const cycles = estimateCycles(stats, coherence, null, hidden.cycleModel);
-    const benignCycles = estimateCycles(benignStats, null, null, hidden.cycleModel);
-    const windows = runCacheStreamWindows(hidden.addrs, hidden.geometry, 8);
-    return { stats, benignStats, coherence, cycles, benignCycles, windows, skew: setSkew(stats) };
-  }
-
-  // -------------------------------------------------------------------------
-  // Actions & observations
-  // -------------------------------------------------------------------------
-
-  private buildActions(): WorldAction[] {
-    return [
-      {
-        id: "perf-counters",
-        kind: "measure",
-        label: "Read perf counters",
-        description: "Cycle counts for the current build vs the last known-good build.",
-      },
-      {
-        id: "cache-params",
-        kind: "inspect",
-        label: "Dump cache configuration",
-        description: "Size, line size, associativity of the level the loop runs against.",
-      },
-      {
-        id: "miss-timeline",
-        kind: "measure",
-        label: "Miss-rate timeline",
-        description: "Miss rate across eight equal windows of the regression run.",
-      },
-      {
-        id: "set-distribution",
-        kind: "measure",
-        label: "Line-churn analysis",
-        description: "Where repeated accesses land: which lines and sets absorb the churn.",
-      },
-      {
-        id: "coherence-probe",
-        kind: "measure",
-        label: "Coherence probe",
-        description: "Cross-core invalidations vs local writes in the hot region.",
-      },
-      {
-        id: "prefetch-audit",
-        kind: "measure",
-        label: "Prefetch audit",
-        description: "Prefetches issued vs actually-used lines.",
-      },
-    ];
-  }
-
-  private observeAction(hidden: CpuMemoryHidden, actionId: string): Observation | null {
-    const s = this.simulate(hidden);
-    const missRate = s.stats.misses / Math.max(1, s.stats.accesses);
-    const benignMissRate = s.benignStats.misses / Math.max(1, s.benignStats.accesses);
-    const slowdown = Math.max(1, s.cycles / Math.max(1, s.benignCycles));
-    const churn = hitConcentration(s.stats);
-
-    switch (actionId) {
-      case "perf-counters":
-        return {
-          actionId,
-          summary: "Cycle estimates for the regressed build vs the known-good baseline.",
-          readings: [
-            { name: "baseline cycles/K accesses", value: String(Math.round((s.benignCycles / Math.max(1, hidden.benignAddrs.length)) * 1000)) },
-            { name: "current cycles/K accesses", value: String(Math.round((s.cycles / Math.max(1, hidden.addrs.length)) * 1000)) },
-            { name: "estimated slowdown", value: `${slowdown.toFixed(2)}x` },
-          ],
-        };
-      case "cache-params":
-        return {
-          actionId,
-          summary: "Effective cache geometry seen by the hot loop.",
-          readings: [
-            { name: "size", value: `${hidden.geometry.sizeBytes / 1024} KiB` },
-            { name: "line size", value: `${hidden.geometry.lineSizeBytes} B` },
-            { name: "associativity", value: `${hidden.geometry.associativity}-way` },
-            { name: "sets", value: String(Math.round(hidden.geometry.sizeBytes / (hidden.geometry.lineSizeBytes * hidden.geometry.associativity))) },
-          ],
-        };
-      case "miss-timeline": {
-        const flat = s.windows.every((w) => Math.abs(w - (s.windows[0] as number)) < 0.05);
-        const shape = flat ? "flat" : "bursty";
-        return {
-          actionId,
-          summary: `Miss rate ${(missRate * 100).toFixed(1)}% now vs ${(benignMissRate * 100).toFixed(1)}% on the known-good build; profile is ${shape} across the run.`,
-          readings: [
-            { name: "miss rate", value: `${(missRate * 100).toFixed(1)}%` },
-            { name: "baseline miss rate", value: `${(benignMissRate * 100).toFixed(1)}%` },
-            { name: "shape", value: shape },
-            { name: "windows", value: s.windows.map((w) => `${Math.round(w * 100)}%`).join(" ") },
-          ],
-        };
-      }
-      case "set-distribution": {
-        const activeSets = Object.keys(s.stats.missesPerSet).length;
-        const skew = s.skew;
-        const concentrated = skew > 3;
-        const spread = skew <= 1.5 && activeSets > 16;
-        const verdictText = concentrated
-          ? `Misses pile onto one set: the hottest set takes ${skew.toFixed(1)}x the misses of the median active set.`
-          : spread
-            ? `First-touch misses spread evenly across sets; almost no repeated-line churn.`
-            : `Mixed pattern: max/median set skew ${skew.toFixed(1)}x across ${activeSets} active set(s).`;
-        return {
-          actionId,
-          summary: verdictText,
-          readings: [
-            { name: "max/median set skew", value: `${skew.toFixed(1)}x` },
-            { name: "repeat-churn concentration", value: `${churn.ratio.toFixed(1)}x` },
-            { name: "hottest line set", value: churn.topTag ? churn.topTag.split(":")[0] ?? "?" : "none" },
-            { name: "evictions", value: String(s.stats.evictions) },
-            { name: "distinct lines", value: String(s.stats.distinctLines) },
-            { name: "active sets", value: String(activeSets) },
-          ],
-          discriminatesAgainst: concentrated ? ["capacity-miss"] : spread ? ["conflict-miss"] : [],
-        };
-      }
-      case "coherence-probe": {
-        if (!s.coherence) {
-          return {
-            actionId,
-            summary: "No inter-core write sharing detected anywhere near the hot region.",
-            readings: [
-              { name: "cross-core invalidations", value: "0" },
-              { name: "local writes", value: "n/a" },
-            ],
-            discriminatesAgainst: ["false-sharing"],
-          };
-        }
-        const dominated = s.coherence.invalidationDominated;
-        return {
-          actionId,
-          summary: dominated
-            ? `Invalidation traffic dominates: ${s.coherence.crossCoreInvalidations} cross-core transfers over ${s.coherence.contendedLines} contended line(s).`
-            : `Coherence traffic present but minor: ${s.coherence.crossCoreInvalidations} transfers.`,
-          readings: [
-            { name: "cross-core invalidations", value: String(s.coherence.crossCoreInvalidations) },
-            { name: "contended lines", value: String(s.coherence.contendedLines) },
-            { name: "local writes", value: String(s.coherence.localWrites) },
-          ],
-          discriminatesAgainst: dominated ? [] : ["false-sharing"],
-        };
-      }
-      case "prefetch-audit": {
-        const pf = runPrefetch(hidden.addrs, hidden.geometry);
-        const wasteful = pf.usefulFraction < 0.15 && pf.issued > 200;
-        return {
-          actionId,
-          summary: wasteful
-            ? `Prefetcher issued ${pf.issued} lines; almost none were ever demanded. Bus is crowded with dead prefetches.`
-            : `Prefetcher activity unremarkable (issued ${pf.issued}, useful fraction ${(pf.usefulFraction * 100).toFixed(0)}%).`,
-          readings: [
-            { name: "prefetches issued", value: String(pf.issued) },
-            { name: "useful fraction", value: `${(pf.usefulFraction * 100).toFixed(0)}%` },
-            { name: "bus transactions", value: String(pf.busTransactions) },
-          ],
-          discriminatesAgainst: wasteful ? [] : ["prefetch-storm"],
-        };
-      }
-      default:
-        return null;
-    }
-  }
-
-  observe(
-    hidden: WorldSpec["hidden"],
-    actionId: string,
-    actionCount: number,
-  ): Observation | null {
+  observe(specHidden: WorldSpec["hidden"], actionId: string, actionCount: number): Observation | null {
     void actionCount;
-    return this.observeAction(hidden.parameters as unknown as CpuMemoryHidden, actionId);
+    return observeAction(specHidden.parameters as unknown as CpuMemoryHidden, actionId);
   }
 
-  // -------------------------------------------------------------------------
-  // Hypotheses
-  // -------------------------------------------------------------------------
-
-  private buildHypotheses(
-    trueCauseId: string,
-    distractors: CauseDescriptor[],
-    band: number,
-    rng: Rng,
-  ): Hypothesis[] {
-    const mk = (c: CauseDescriptor, isTrue: boolean): Hypothesis => ({
-      id: c.id,
-      label: c.label,
-      detail: c.mechanism,
-      isTrue,
-    });
-    const truth = CAUSES.find((c) => c.id === trueCauseId)!;
-    const list = [mk(truth, true)];
-    const kept = band >= 2 ? distractors : rng.sample(distractors, 1);
-    list.push(...rng.shuffled(kept).map((c) => mk(c, false)));
-    return rng.shuffled(list);
-  }
-
-  // -------------------------------------------------------------------------
-  // Solution model
-  // -------------------------------------------------------------------------
-
-  private buildSolution(causeId: string) {
-    const paths: Record<string, string[]> = {
-      "conflict-miss": ["perf-counters", "set-distribution"],
-      "capacity-miss": ["perf-counters", "miss-timeline", "set-distribution"],
-      "false-sharing": ["perf-counters", "coherence-probe"],
-      "prefetch-storm": ["perf-counters", "set-distribution", "prefetch-audit"],
-    };
-    return {
-      correctHypothesisId: causeId,
-      discriminatingActions: paths[causeId] ?? paths["conflict-miss"]!,
-      explanation: CAUSES.find((c) => c.id === causeId)?.mechanism ?? "",
-    };
-  }
-
-  explain(hidden: WorldSpec["hidden"]): string {
-    const h = hidden.parameters as unknown as CpuMemoryHidden;
-    const cause = CAUSES.find((c) => c.id === hidden.causeId)!;
-    const s = this.simulate(h);
-    const detail: Record<string, string> = {
-      "conflict-miss": `Simulation: ${s.stats.misses} misses over ${s.stats.accesses} accesses with ${s.stats.evictions} evictions concentrated where the churn is.`,
-      "capacity-miss": `Simulation: ${s.stats.distinctLines} distinct lines touched against ${Math.round(h.geometry.sizeBytes / h.geometry.lineSizeBytes)} lines of cache; misses stay high across all windows.`,
-      "false-sharing": `Simulation: ${s.coherence?.crossCoreInvalidations ?? 0} cross-core invalidation transfers from ${s.coherence?.contendedLines ?? 0} shared line(s).`,
-      "prefetch-storm": `Simulation: prefetch useful fraction ${(runPrefetch(h.addrs, h.geometry).usefulFraction * 100).toFixed(0)}%.`,
-    };
-    return `${cause.mechanism} ${detail[cause.id] ?? ""}`;
-  }
-
-  // -------------------------------------------------------------------------
-  // Independent solver: votes from observations only; null while ambiguous.
-  // -------------------------------------------------------------------------
-
+  /**
+   * Independent solver. Reads ONLY observation readings; conservative:
+   * returns null while key discriminations are missing.
+   */
   solve(
     _spec: Pick<WorldSpec, "actions" | "hypotheses" | "briefing">,
     observations: Observation[],
   ): { hypothesisId: string } | null {
-    let conflictEvidence = false;
-    let falseSharingEvidence = false;
-    let sawRegression = false;
-    let sawSpread = false;
-    let prefetchHelped = false;
-    let prefetchDefeatedFlag = false;
+    const S = {
+      regression: false,
+      skewHigh: false,
+      spreadMisses: false,      // skew <= 1.5 across many sets
+      lowReuse: false,          // reuse factor <= 2
+      deadPrefetch: false,
+      helpfulPrefetch: false,
+      quietPrefetch: false,
+      coherenceTrueShare: false,
+      coherenceFalseShare: false,
+      timelineShape: "",
+      phaseCount: 0,            // distinct phase labels seen in timeline evidence
+      gapPattern: "",
+      footprintRatio: 0,
+    };
 
     for (const obs of observations) {
-      const get = (name: string) => obs.readings.find((r) => r.name === name)?.value ?? "";
-      if (obs.actionId === "perf-counters") {
-        sawRegression = parseFloat(get("estimated slowdown")) > 1.15;
-      }
-      if (obs.actionId === "set-distribution") {
-        const skew = parseFloat(get("max/median set skew"));
-        if (!Number.isNaN(skew)) {
-          if (skew > 3) conflictEvidence = true;
-          else if (skew <= 1.5) sawSpread = true;
+      const num = (name: string) => parseFloat(obs.readings.find((r) => r.name === name)?.value ?? "");
+      switch (obs.actionId) {
+        case "perf-counters":
+          S.regression = num("estimated slowdown") > 1.15;
+          break;
+        case "set-distribution": {
+          const skew = num("set skew max/median");
+          const reuse = num("reuse factor");
+          S.gapPattern = obs.readings.find((r) => r.name === "gap pattern")?.value ?? "";
+          S.footprintRatio = num("footprint ratio");
+          if (!Number.isNaN(skew)) {
+            if (skew > 3) S.skewHigh = true;
+            else if (skew <= 1.5) S.spreadMisses = true;
+          }
+          if (!Number.isNaN(reuse)) S.lowReuse = reuse <= 2.5;
+          break;
         }
-      }
-      if (obs.actionId === "coherence-probe") {
-        const cross = parseInt(get("cross-core invalidations"), 10);
-        if (!Number.isNaN(cross)) {
-          if (cross === 0) falseSharingEvidence = false;
-          else if (cross > 64) falseSharingEvidence = true;
+        case "coherence-probe": {
+          const cross = parseInt(obs.readings.find((r) => r.name === "cross-core invalidations")?.value ?? "0", 10);
+          if (cross > 64) {
+            const sameWord = parseInt(obs.readings.find((r) => r.name === "same-word conflicts")?.value ?? "0", 10);
+            S.coherenceTrueShare = sameWord > cross * 0.8;
+            S.coherenceFalseShare = !S.coherenceTrueShare;
+          }
+          break;
         }
-      }
-      if (obs.actionId === "prefetch-audit") {
-        const frac = parseFloat(get("useful fraction")) / 100;
-        const issued = parseInt(get("prefetches issued"), 10);
-        if (!Number.isNaN(frac) && !Number.isNaN(issued)) {
-          if (frac < 0.15 && issued > 200) prefetchDefeatedFlag = true;
-          else if (frac >= 0.5 && issued > 100) prefetchHelped = true;
+        case "prefetch-audit": {
+          const frac = parseFloat((obs.readings.find((r) => r.name === "useful fraction")?.value ?? "0%").replace("%", "")) / 100;
+          const issued = parseInt(obs.readings.find((r) => r.name === "prefetches issued")?.value ?? "0", 10);
+          if (issued < 50) {
+            S.quietPrefetch = true;
+          } else if (frac >= 0.5 && issued > 100) {
+            S.helpfulPrefetch = true;
+          } else if (frac < 0.4) {
+            S.deadPrefetch = true;
+          }
+          break;
+        }
+        case "miss-timeline": {
+          S.timelineShape = obs.readings.find((r) => r.name === "shape")?.value ?? "";
+          const labels = obs.readings.find((r) => r.name === "phase window labels")?.value;
+          if (labels && labels.trim().length > 0) {
+            const parts = labels.split(" ").filter(Boolean);
+            S.phaseCount = new Set(parts).size;
+          }
+          break;
         }
       }
     }
 
-    // Spread-out misses plus a helpful prefetcher means one big streaming
-    // working set: capacity. Spread-out misses plus a defeated prefetcher
-    // means the stride pattern itself is pathological: prefetch storm.
-    // Spread-out misses plus a helpful prefetcher means one big streaming
-    // working set: capacity. Spread-out misses plus a defeated prefetcher
-    // means the stride pattern itself is pathological: prefetch storm.
+    if (!S.regression) return null;
 
-    if (!sawRegression) return null;
-
-    // Decision tree — mirrors how an engineer narrows the field:
-    //   1. Direct coherence signal wins: heavy cross-core invalidations.
-    //   2. Concentrated set skew: conflicts.
-    //   3. Spread-out misses: split by whether the prefetcher is defeated
-    //      (pathological stride = storm) or still working (plain capacity).
-    // Ambiguity at any node means "keep digging" (null), never a guess.
-    if (falseSharingEvidence) return { hypothesisId: "false-sharing" };
-    if (conflictEvidence) return { hypothesisId: "conflict-miss" };
-    if (sawSpread) {
-      if (prefetchDefeatedFlag) return { hypothesisId: "prefetch-storm" };
-      return { hypothesisId: "capacity-miss" };
+    // Phase-change worlds: the timeline shows a multi-phase profile. When
+    // the phase evidence is present AND the miss profile is not flat, that
+    // is the phase-change signature — it outranks class-level naming
+    // because the timeline directly contradicts every single-phase story.
+    // (Skew may be low or high depending on what the new phase touches.)
+    if (S.phaseCount > 1 && S.timelineShape !== "flat") {
+      return { hypothesisId: "phase-change" };
     }
+
+    // Coherence class: same-word share separates true from false sharing.
+    if (S.coherenceTrueShare) return { hypothesisId: "true-sharing" };
+    if (S.coherenceFalseShare) return { hypothesisId: "false-sharing" };
+
+    // Conflict class.
+    if (S.skewHigh) {
+      if (S.phaseCount > 1) return { hypothesisId: "phase-change" };
+      return { hypothesisId: "conflict-miss" };
+    }
+
+    // Cold class: name the pattern-level cause the evidence supports.
+    // The prefetch audit's healthy reading is a property of the pattern;
+    // when prefetching IS defeated, storm/starved become the named causes
+    // (they are the only cold families whose mechanism *is* the prefetch
+    // failure). Otherwise reuse + gap structure name spatial/cold churn.
+    if (S.spreadMisses) {
+      if (S.gapPattern === "scatter" || S.gapPattern === "long-stride") {
+        // Lines touched once, far apart: poor spatial locality family.
+        if (S.deadPrefetch) return { hypothesisId: "prefetch-storm" };
+        if (S.quietPrefetch) return { hypothesisId: "prefetch-starved" };
+        return { hypothesisId: "spatial-locality-loss" };
+      }
+      if (S.lowReuse) {
+        // Short-stride or contiguous with no reuse: spatial loss for
+        // non-unit strides; contiguous + defeated prefetch also means
+        // every line touched once (spatial loss); churn worlds get
+        // prefetcher help on their contiguous walks.
+        if (S.gapPattern === "contiguous") {
+          if (S.deadPrefetch || S.quietPrefetch) return { hypothesisId: "spatial-locality-loss" };
+          return { hypothesisId: "compulsory-miss-surge" };
+        }
+        return { hypothesisId: "spatial-locality-loss" };
+      }
+      // Reuse present but ineffective: reuse distance exceeded cache.
+      return { hypothesisId: "temporal-locality-loss" };
+    }
+    void S.footprintRatio;
+    void S.timelineShape;
+    void S.helpfulPrefetch;
+    void S.deadPrefetch;
+    void S.quietPrefetch;
     return null;
   }
 
+  explain(specHidden: WorldSpec["hidden"]): string {
+    const h = specHidden.parameters as unknown as CpuMemoryHidden;
+    const def = FAMILIES.find((f) => f.id === specHidden.causeId)!;
+    const a = analyze(h);
+    const bits: string[] = [def.mechanism];
+    bits.push(
+      `Simulated: slowdown ${a.slowdown.toFixed(2)}×, L1 miss rate ${pct(a.missRate)} (baseline ${pct(a.benignMissRate)}), set skew ${a.setSkew.toFixed(1)}×, reuse factor ${a.locality.reuseFactor.toFixed(1)}, gap pattern ${a.gapPattern}.`,
+    );
+    if (a.coherence && a.coherence.crossCoreInvalidations > 0) {
+      bits.push(`Coherence: ${a.coherence.crossCoreInvalidations} cross-core transfers, ${a.coherence.sameWordConflicts} same-word.`);
+    }
+    bits.push(`Prefetch: issued ${a.prefetchNow.issued}, useful ${pct(a.prefetchNow.usefulFraction)}.`);
+    if (a.hierarchy) {
+      bits.push(`Hierarchy: L1 miss rate ${pct(a.hierarchy.l1MissRate)}, L2 miss rate ${pct(a.hierarchy.l2MissRate)}.`);
+    }
+    if (h.workload.phases.length > 1) {
+      bits.push(`Workload has ${h.workload.phases.length} phases: ${h.workload.phases.map((p) => p.label).join(" → ")}.`);
+    }
+    return bits.join(" ");
+  }
+
   // -------------------------------------------------------------------------
-  // Briefing & difficulty
+  // Helpers
   // -------------------------------------------------------------------------
 
-  private buildBriefing(geo: CacheGeometry, band: number, rng: Rng): string {
+  private buildHypotheses(truth: FamilyDef, distractors: FamilyDef[], rng: Rng): Hypothesis[] {
+    const mk = (f: FamilyDef, isTrue: boolean): Hypothesis => {
+      const h: Hypothesis = { id: f.id, label: f.label, detail: f.mechanism, isTrue };
+      return h;
+    };
+    const list = [mk(truth, true)];
+    for (const d of rng.shuffled(distractors)) list.push(mk(d, false));
+    return rng.shuffled(list);
+  }
+
+  private buildDifficulty(band: number, distractorCount: number, h: CpuMemoryHidden, actionCount: number): DifficultyProfile {
+    const b = Math.min(5, Math.max(1, Math.round(band))) as 1 | 2 | 3 | 4 | 5;
+    const phaseCount = h.workload.phases.length;
+    return {
+      band: b,
+      relevantVariables: 3 + distractorCount + phaseCount,
+      distractorHypotheses: distractorCount,
+      causalDepth: Math.min(3, 1 + Math.floor(b / 2)),
+      observability: Math.max(0.35, 0.85 - b * 0.08),
+      minInvestigations: Math.min(actionCount - 1, 2 + (b >= 3 ? 1 : 0)),
+    };
+  }
+
+  private buildBriefing(
+    h: CpuMemoryHidden,
+    geo: CacheGeometry,
+    secondLevel: CacheGeometry | undefined,
+    band: number,
+    rng: Rng,
+  ): string {
     const svc = rng.pick(["ingest-loop", "rollup-worker", "index-compactor", "feature-extractor"]);
     const slowdownHint = band <= 2 ? "roughly 30-45%" : "measurably";
+    const levels = secondLevel
+      ? `The machine exposes an ${geo.sizeBytes / 1024} KiB L1 (${geo.lineSizeBytes} B lines, ${geo.associativity}-way) backed by a ${secondLevel.sizeBytes / 1024} KiB L2 (${secondLevel.associativity}-way).`
+      : `The machine has a ${geo.sizeBytes / 1024} KiB, ${geo.lineSizeBytes} B-line, ${geo.associativity}-way cache where the loop lives.`;
+    const budget =
+      band >= 3
+        ? `Profiling reruns are expensive: you have a fixed budget of probes before you must commit.`
+        : `Each probe costs a full profiling rerun. Diagnose the single root cause and commit.`;
+    void h;
     return [
       `A routine profiling pass shows the hot loop of your ${svc} service has regressed ${slowdownHint} since yesterday's build.`,
       `The change list mentions a data-layout tweak and a library bump, neither of which touches this loop's code path.`,
-      `The machine has a ${geo.sizeBytes / 1024} KiB, ${geo.lineSizeBytes} B-line, ${geo.associativity}-way set-associative cache where the loop lives. Nothing else changed.`,
-      `You have a fixed evidence budget: each probe costs a full profiling rerun. Diagnose the single root cause and commit.`,
+      levels + " Nothing else changed.",
+      budget,
     ].join("\n\n");
   }
 
-  private buildDifficulty(band: number, distractorCount: number): DifficultyProfile {
-    const clampedBand = Math.min(5, Math.max(1, band)) as 1 | 2 | 3 | 4 | 5;
+  private buildSolution(familyId: FamilyId) {
+    const primary: Partial<Record<FamilyId, string[]>> = {
+      "conflict-miss": ["perf-counters", "set-distribution"],
+      "associativity-cliff": ["perf-counters", "set-distribution"],
+      "capacity-miss": ["perf-counters", "set-distribution", "prefetch-audit"],
+      "compulsory-miss-surge": ["perf-counters", "set-distribution", "miss-timeline"],
+      "spatial-locality-loss": ["perf-counters", "set-distribution", "prefetch-audit"],
+      "temporal-locality-loss": ["perf-counters", "set-distribution", "miss-timeline"],
+      "false-sharing": ["perf-counters", "coherence-probe"],
+      "true-sharing": ["perf-counters", "coherence-probe"],
+      "prefetch-storm": ["perf-counters", "set-distribution", "prefetch-audit"],
+      "prefetch-starved": ["perf-counters", "set-distribution", "prefetch-audit"],
+      "phase-change": ["perf-counters", "miss-timeline", "set-distribution"],
+      "hierarchy-mismatch": ["perf-counters", "miss-timeline", "cache-params"],
+    };
     return {
-      band: clampedBand,
-      relevantVariables: 4 + clampedBand,
-      distractorHypotheses: distractorCount,
-      causalDepth: Math.min(3, 1 + Math.floor(clampedBand / 2)),
-      observability: clampedBand >= 4 ? 0.5 : 0.75,
-      minInvestigations: 2,
+      correctHypothesisId: familyId,
+      discriminatingActions: primary[familyId] ?? ["perf-counters", "set-distribution"],
+      explanation: family(familyId).mechanism,
     };
-  }
-
-  private conceptsFor(causeId: string): ConceptRef[] {
-    const specific: Record<string, Array<[string, number]>> = {
-      "conflict-miss": [["cpu-cache-levels", 2], ["cpu-cache-miss", 2]],
-      "capacity-miss": [["cpu-cache-levels", 2], ["cpu-cache-miss", 2]],
-      "false-sharing": [["cpu-coherency", 2], ["cpu-mesi", 3]],
-      "prefetch-storm": [["cpu-prefetch", 3]],
-    };
-    return (specific[causeId] ?? []).map(([id, tier]) => ({ id, tier }));
   }
 
   private buildTitle(rng: Rng): string {
-    const frames = [
+    return rng.pick([
       "The Loop That Got Slower Overnight",
       "Thirty Percent From Nowhere",
       "Same Code, Different Machine",
       "The Profiler Says Nothing Broke",
-    ];
-    return rng.pick(frames);
+      "Regression With No Suspect",
+    ]);
   }
 }

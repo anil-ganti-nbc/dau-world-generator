@@ -1,24 +1,56 @@
 {
   "domainId": "cpu-memory",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "name": "CPU memory hierarchy",
-  "description": "Diagnostic worlds over cache behaviour: conflicts, capacity, coherence, and prefetch interaction. All evidence is produced by real set-associative cache / coherence / prefetch simulations.",
+  "description": "Diagnostic worlds over cache behaviour. All evidence is produced by real set-associative cache / coherence / prefetch simulations across a 12-family causal catalogue.",
   "causes": [
     {
       "id": "conflict-miss",
       "label": "Cache set conflicts"
     },
     {
+      "id": "associativity-cliff",
+      "label": "Associativity cliff"
+    },
+    {
       "id": "capacity-miss",
       "label": "Working set exceeds cache"
+    },
+    {
+      "id": "compulsory-miss-surge",
+      "label": "Cold-data churn"
+    },
+    {
+      "id": "spatial-locality-loss",
+      "label": "Spatial locality loss"
+    },
+    {
+      "id": "temporal-locality-loss",
+      "label": "Reuse distance blow-up"
     },
     {
       "id": "false-sharing",
       "label": "False sharing between cores"
     },
     {
+      "id": "true-sharing",
+      "label": "True sharing on hot data"
+    },
+    {
       "id": "prefetch-storm",
       "label": "Useless prefetch traffic"
+    },
+    {
+      "id": "prefetch-starved",
+      "label": "Prefetcher starved"
+    },
+    {
+      "id": "phase-change",
+      "label": "Workload phase change"
+    },
+    {
+      "id": "hierarchy-mismatch",
+      "label": "Hierarchy mismatch"
     }
   ],
   "templates": [
@@ -40,7 +72,8 @@
         "cpu-write-policy",
         "cpu-coherency",
         "cpu-mesi",
-        "cpu-prefetch"
+        "cpu-prefetch",
+        "cpu-memory-wall"
       ]
     }
   ]

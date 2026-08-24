@@ -18,6 +18,7 @@ engine.register(new CpuMemoryDomain());
 interface Session {
   spec: WorldSpec;
   observations: Observation[];
+  actionsRun: string[];
   frozenHypothesis: string | null;
   committed: boolean;
   startedAt: number;
@@ -100,14 +101,48 @@ function renderActions(): void {
   if (!session) return;
   const box = $("actions");
   box.replaceChildren();
+
+  // Probe budget (band ≥3 worlds brief that reruns are budgeted): each
+  // probe costs its action cost from a fixed allowance. cache-params is
+  // free. The budget is advisory pressure, not a hard wall — the commit
+  // button stays available; the UI shows remaining budget so random
+  // clicking is visibly wasteful.
+  const band = session.spec.difficulty.band;
+  const budget = band >= 3 ? 5 : Infinity;
+  const spent = session.actionsRun
+    .map((id) => ACTION_COST[id] ?? 1)
+    .reduce((a, b) => a + b, 0);
+  if (band >= 3) {
+    const left = budget - spent;
+    box.appendChild(
+      el(
+        "p",
+        { class: "hint" },
+        `Probe budget: ${spent}/${budget} rerun-units used${left > 0 ? ` · ${left} left` : " · budget exhausted — commit when ready"}.`,
+      ),
+    );
+  }
+
   for (const action of session.spec.actions) {
     const used = session.observations.some((o) => o.actionId === action.id);
     const btn = el("button", { class: "action-btn" }, action.label);
-    btn.appendChild(el("small", {}, used ? "already probed (free to re-read)" : action.description));
+    btn.appendChild(
+      el("small", {}, `${ACTION_COST[action.id] !== undefined && ACTION_COST[action.id]! > 0 ? `[cost ${ACTION_COST[action.id]}] ` : ""}${used ? "already probed (free to re-read)" : action.description}`),
+    );
     btn.addEventListener("click", () => runAction(action.id));
     box.appendChild(btn);
   }
 }
+
+const ACTION_COST: Record<string, number> = {
+  "perf-counters": 1,
+  "cache-params": 0,
+  "miss-timeline": 1,
+  "set-distribution": 1,
+  "coherence-probe": 1,
+  "prefetch-audit": 1,
+  "prefetch-off-run": 2,
+};
 
 function runAction(actionId: string): void {
   if (!session || session.committed) return;
@@ -116,6 +151,7 @@ function runAction(actionId: string): void {
   // Replace any earlier observation of the same action (re-reading is free).
   session.observations = session.observations.filter((o) => o.actionId !== actionId);
   session.observations.push(obs);
+  if (!session.actionsRun.includes(actionId)) session.actionsRun.push(actionId);
   renderActions();
   renderLog();
   updateCommit();
@@ -241,7 +277,7 @@ $("generate").addEventListener("click", () => {
     seed: ($("seed") as HTMLInputElement).value.trim() || "default",
     difficultyBand: parseInt(($("band") as HTMLSelectElement).value, 10),
   });
-  session = { spec, observations: [], frozenHypothesis: null, committed: false, startedAt: Date.now() };
+  session = { spec, observations: [], actionsRun: [], frozenHypothesis: null, committed: false, startedAt: Date.now() };
   renderWorld();
 });
 
@@ -263,7 +299,7 @@ if (launch?.seed) {
         seed: launch.seed,
         difficultyBand: launch.difficultyBand,
       });
-      session = { spec, observations: [], frozenHypothesis: null, committed: false, startedAt: Date.now() };
+      session = { spec, observations: [], actionsRun: [], frozenHypothesis: null, committed: false, startedAt: Date.now() };
       renderWorld();
     } catch (err) {
       console.error("launch payload rejected by validation:", err);

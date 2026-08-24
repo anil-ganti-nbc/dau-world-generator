@@ -1,14 +1,17 @@
 /**
  * World validation.
  *
- * Two independent layers:
+ * Layers:
+ *  1. Structural invariants on the spec alone.
+ *  2. Solver checks:
+ *     - the DECLARED path must solve (solvability guarantee);
+ *     - prefixes of the declared path must not solve (no early reveal);
+ *     - ALTERNATIVE single-probe and probe-pair paths are explored so that
+ *       worlds admitting multiple valid investigation strategies are
+ *       recognised as such (multi-path support), recorded in the report.
  *
- * 1. Structural invariants — checked on the spec alone. Cheap, always run.
- * 2. Solver checks — an independent solver (provided by the domain plugin but
- *    never by the generator path) must be able to identify the true cause
- *    from a discriminating evidence path, and must FAIL to identify it when
- *    given only distractor-consistent evidence. This is what separates a real
- *    diagnostic world from a guessing game with extra steps.
+ * Refutation semantics: a distractor is refuted when an observation marks
+ * it (`discriminatesAgainst`) or when the solver lands uniquely on truth.
  */
 
 import type { DomainPlugin } from "./plugin";
@@ -33,23 +36,17 @@ export function validateWorldStructure(spec: WorldSpec): ValidationIssue[] {
   }
   if (spec.seed.length === 0) issues.push(issue("error", "seed", "seed is empty"));
 
-  // Concepts and provenance.
   if (spec.concepts.length === 0) issues.push(issue("error", "concepts", "world references no DAU concepts"));
   const conceptIds = new Set(spec.concepts.map((c) => c.id));
   for (const pre of spec.prerequisiteConceptIds) {
     if (!conceptIds.has(pre)) {
-      issues.push(
-        issue("warning", "prereq-not-exercised", `prerequisite ${pre} not among exercised concepts`),
-      );
+      issues.push(issue("warning", "prereq-not-exercised", `prerequisite ${pre} not among exercised concepts`));
     }
   }
 
-  // Exactly one true hypothesis; at least one distractor above band 1.
   const trueHypotheses = spec.hypotheses.filter((h) => h.isTrue);
   if (trueHypotheses.length !== 1) {
-    issues.push(
-      issue("error", "hypotheses", `expected exactly 1 true hypothesis, found ${trueHypotheses.length}`),
-    );
+    issues.push(issue("error", "hypotheses", `expected exactly 1 true hypothesis, found ${trueHypotheses.length}`));
   }
   const trueH = trueHypotheses[0];
   if (trueH && trueH.id !== spec.solution.correctHypothesisId) {
@@ -61,23 +58,15 @@ export function validateWorldStructure(spec: WorldSpec): ValidationIssue[] {
       issue("error", "distractors", `difficulty ${spec.difficulty.band} needs >=2 distractor hypotheses, found ${distractors}`),
     );
   }
-  if (distractors !== spec.difficulty.distractorHypotheses) {
-    issues.push(
-      issue("warning", "distractor-count", "difficulty.distractorHypotheses does not match hypotheses array"),
-    );
-  }
 
-  // Actions referenced by the solution must exist.
   const actionIds = new Set(spec.actions.map((a) => a.id));
   for (const needed of spec.solution.discriminatingActions) {
     if (!actionIds.has(needed)) {
       issues.push(issue("error", "action-missing", `discriminating action ${needed} is not offered to the learner`));
     }
   }
-  if (spec.actions.length < spec.difficulty.minInvestigations) {
-    issues.push(
-      issue("error", "actions", "fewer actions than difficulty.minInvestigations"),
-    );
+  if (spec.actions.length < spec.difficulty.minInvestigations + 1) {
+    issues.push(issue("error", "actions", "fewer actions than difficulty.minInvestigations + baseline read"));
   }
 
   return issues;
@@ -89,81 +78,128 @@ export function validateWorldStructure(spec: WorldSpec): ValidationIssue[] {
 
 export interface SolveReport {
   solvable: boolean;
+  /** Declared-path prefix that already solves (early-reveal defect). */
+  earlySolveAt: number | null;
   distractorsRefutable: boolean;
-  /** The observation sequence that solves the world (provenance for tests). */
   solvingPath: string[];
+  /** Number of alternative action subsets (size ≤ maxAltSize) that also solve. */
+  alternativePaths: number;
+  /** Example alternative paths (for fixtures/docs). */
+  exampleAlternatives: string[][];
+  survivingDistractors: string[];
   issues: ValidationIssue[];
 }
 
-/**
- * Run the plugin's independent solver against:
- *   - every single-action subset (must NOT conclude the true cause), then
- *   - the declared discriminating action set (MUST conclude the true cause).
- *
- * Single-action non-solvability enforces "reasoning, not lucky guessing":
- * no one observation may give the game away for these diagnostic worlds.
- */
+function observationsFor(plugin: DomainPlugin, spec: WorldSpec, ids: string[]): Observation[] {
+  return ids
+    .map((id) => plugin.observe(spec.hidden, id, 0))
+    .filter((o): o is Observation => o !== null);
+}
+
+function solvesVia(
+  plugin: DomainPlugin,
+  spec: WorldSpec,
+  ids: string[],
+): boolean {
+  const verdict = plugin.solve(
+    { actions: spec.actions, hypotheses: spec.hypotheses, briefing: spec.briefing },
+    observationsFor(plugin, spec, ids),
+  );
+  return Boolean(verdict && verdict.hypothesisId === spec.solution.correctHypothesisId);
+}
+
+/** All ordered subsets of `pool` with length ≤ maxSize (order-insensitive). */
+function subsets(pool: string[], maxSize: number): string[][] {
+  const out: string[][] = [];
+  const n = pool.length;
+  const total = 1 << n;
+  for (let mask = 1; mask < total; mask++) {
+    const subset: string[] = [];
+    for (let i = 0; i < n; i++) if (mask & (1 << i)) subset.push(pool[i]!);
+    if (subset.length <= maxSize) out.push(subset);
+  }
+  return out;
+}
+
 export function solveCheck(spec: WorldSpec, plugin: DomainPlugin): SolveReport {
   const issues: ValidationIssue[] = [];
   const discriminating = spec.solution.discriminatingActions;
 
-  const observationsFor = (ids: string[]): Observation[] =>
-    ids.map((id) => plugin.observe(spec.hidden, id, 0)).filter((o): o is Observation => o !== null);
-
-  // Every proper prefix of the discriminating path must be insufficient —
-  // otherwise the world is trivially solved early.
+  // Prefixes of the declared path must not give the answer away.
+  let earlySolveAt: number | null = null;
   for (let i = 1; i < discriminating.length; i++) {
-    const partial = observationsFor(discriminating.slice(0, i));
-    const partialSolve = plugin.solve(
-      { actions: spec.actions, hypotheses: spec.hypotheses, briefing: spec.briefing },
-      partial,
-    );
-    if (partialSolve && partialSolve.hypothesisId === spec.solution.correctHypothesisId) {
+    if (solvesVia(plugin, spec, discriminating.slice(0, i))) {
+      earlySolveAt = i;
       issues.push(
-        issue(
-          "warning",
-          "early-solve",
-          `solver reaches the answer after only ${i} of ${discriminating.length} investigations`,
-        ),
+        issue("warning", "early-solve", `solver reaches the answer after only ${i} of ${discriminating.length} investigations`),
       );
+      break;
     }
   }
 
-  // Full path must solve.
-  const fullObservations = observationsFor(discriminating);
-  const fullSolve = plugin.solve(
-    { actions: spec.actions, hypotheses: spec.hypotheses, briefing: spec.briefing },
-    fullObservations,
-  );
-  const solvable = Boolean(fullSolve && fullSolve.hypothesisId === spec.solution.correctHypothesisId);
+  // Declared path must solve.
+  const solvable = solvesVia(plugin, spec, discriminating);
   if (!solvable) {
-    issues.push(
-      issue("error", "unsolvable", "independent solver cannot reach the true cause from the declared evidence path"),
-    );
+    issues.push(issue("error", "unsolvable", "independent solver cannot reach the true cause from the declared evidence path"));
   }
 
-  // Distractor refutability: after the full path, the solver's confidence set
-  // must exclude every distractor. Plugins report this via solve() returning
-  // the unique supported hypothesis; we additionally require each distractor
-  // to be eliminated by at least one observation marked against it OR by the
-  // solver's own discrimination logic. The check below verifies the marks.
-  const observed = new Set<string>();
-  for (const obs of fullObservations) {
-    for (const h of obs.discriminatesAgainst ?? []) observed.add(h);
+  // Multi-path discovery: any proper subset of measurable actions that also
+  // solves counts as an alternative investigation strategy. Cap subset size
+  // to keep this cheap (≤4 probes).
+  const pool = spec.actions.map((a) => a.id).filter((id) => id !== "cache-params");
+  let alternativePaths = 0;
+  const exampleAlternatives: string[][] = [];
+  for (const subset of subsets(pool, Math.min(4, discriminating.length + 1))) {
+    const isDeclared =
+      subset.length === discriminating.length &&
+      [...subset].sort().join() === [...discriminating].sort().join();
+    if (isDeclared) continue;
+    if (solvesVia(plugin, spec, subset)) {
+      alternativePaths += 1;
+      if (exampleAlternatives.length < 5) exampleAlternatives.push(subset);
+    }
   }
-  let distractorsRefutable = true;
+
+  // Refutation accounting over full learner-visible set (all actions).
+  const allObservations = observationsFor(plugin, spec, spec.actions.map((a) => a.id));
+  const markedAgainst = new Set<string>();
+  for (const obs of allObservations) {
+    for (const h of obs.discriminatesAgainst ?? []) markedAgainst.add(h);
+  }
+  const surviving: string[] = [];
+  let undeclaredSurvivors = 0;
   for (const h of spec.hypotheses) {
     if (h.isTrue) continue;
-    if (!observed.has(h.id)) {
-      // Not directly marked: acceptable only if the solver still lands uniquely
-      // on the truth (implicit elimination). We accept implicit elimination,
-      // but record it so tests can tighten this per domain.
-      distractorsRefutable = distractorsRefutable && solvable;
+    const refuted = markedAgainst.has(h.id);
+    if (!refuted) {
+      surviving.push(h.id);
+      if (!h.unrefutable) undeclaredSurvivors += 1;
     }
   }
-  if (!distractorsRefutable) {
-    issues.push(issue("error", "distractor-unrefuted", "at least one distractor survives all evidence"));
+  // Surviving hypotheses must be declared unrefutable. Additionally, at
+  // least one distractor MUST be refuted somewhere — a world where nothing
+  // is ever excluded is not diagnostic.
+  const distractorsRefutable = solvable && undeclaredSurvivors === 0 && markedAgainst.size > 0;
+  if (undeclaredSurvivors > 0) {
+    issues.push(
+      issue(
+        "error",
+        "distractor-unrefuted",
+        `${undeclaredSurvivors} distractor(s) survive all evidence without being declared unrefutable: ${surviving.join(", ")}`,
+      ),
+    );
+  } else if (solvable && markedAgainst.size === 0) {
+    issues.push(issue("error", "non-discriminating", "no observation excludes any hypothesis — world is not diagnostic"));
   }
 
-  return { solvable, distractorsRefutable, solvingPath: [...discriminating], issues };
+  return {
+    solvable,
+    earlySolveAt,
+    distractorsRefutable,
+    solvingPath: [...discriminating],
+    alternativePaths,
+    exampleAlternatives,
+    survivingDistractors: surviving,
+    issues,
+  };
 }

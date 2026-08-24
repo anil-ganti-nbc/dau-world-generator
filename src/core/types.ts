@@ -54,6 +54,13 @@ export interface Hypothesis {
   label: string;
   detail: string;
   isTrue: boolean;
+  /**
+   * True when this hypothesis shares the truth's top-level evidence
+   * signature and therefore CANNOT be excluded by any probe in this world.
+   * Such hypotheses are surfaced to the learner as "cannot be excluded"
+   * rather than presented as silently wrong.
+   */
+  unrefutable?: boolean;
 }
 
 /** Machine-checkable solution contract. */

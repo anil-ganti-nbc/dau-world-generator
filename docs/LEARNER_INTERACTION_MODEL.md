@@ -15,15 +15,16 @@ read briefing → form hypotheses → choose evidence (spend probes)
 
 ## Action vocabulary
 
-| Action | v1 status | Notes |
+| Action | v0.2 status | Cost |
 | --- | --- | --- |
-| inspect / measure | shipped | read-only evidence; free re-reads of already-probed actions |
-| compare | shipped (implicit) | baseline-vs-current pairs built into readings |
-| predict (freeze) | shipped | freeze a hypothesis before committing; timestamped |
+| inspect / measure | shipped | 1 (cache-params free at 0) |
+| compare (baseline vs current) | shipped (implicit in readings) | — |
+| predict (freeze) | shipped | timestamped |
 | commit diagnosis | shipped | graded against ground truth |
-| run / step | later | advance simulated time (predictive/failure-injection modes) |
-| change / configure | later | mutate hidden state via deterministic recipes |
-| annotate hypothesis | later | attach reasoning to a freeze (feeds misconception targeting) |
+| run counterfactual (prefetch-off) | shipped | 2 — rerun with policy changed |
+| run counterfactual (assoc-halve) | implemented, gated to band ≥4 | 2 |
+| step / change state | later | predictive & failure-injection modes |
+| annotate hypothesis | later | feeds misconception targeting |
 | request hint | later | ladder keyed to committed-wrong hypotheses |
 
 ## Design rules

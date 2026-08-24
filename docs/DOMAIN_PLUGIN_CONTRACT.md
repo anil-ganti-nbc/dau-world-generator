@@ -47,6 +47,7 @@ interface DomainPlugin {
 | Solution path + explanation | plugin |
 | Hypothesis invariant (exactly one true) | core validation |
 | Solvability + distractor-refutability proof | core validation via plugin solver |
+| Multi-path discovery (alternative solving subsets) | core validation |
 | Reproducibility (RNG discipline, fixtures) | core + tests |
 | Concept provenance shape | core (ids owned by DAU curriculum) |
 | Session, grading, result envelope | core/adapter |
@@ -63,19 +64,27 @@ The engine hands `generate()` an Rng forked from
 
 CI enforces this with byte-identical golden regeneration.
 
+## Honest-truth guard (new in v0.2)
+
+When a generated variant's truth would be indistinguishable from a sibling
+family under the current probe set (e.g. spatial loss whose pattern defeats
+the prefetcher ≈ prefetch storm), generation re-draws deterministically
+instead of shipping an unfair world. The guard lives in the plugin, not the
+core: separability is domain knowledge.
+
 ## Adding a second domain (checklist)
 
 1. New package folder `src/domains/<id>/` with `sim.ts` kernels, `plugin.ts`,
    `index.ts`.
 2. Declare ≥4 mutually-plausible causes for the template's situation; each
-   needs a *distinct simulated signature* (see VALIDATION_MODEL.md — if two
-   causes cannot produce different evidence, they are one cause).
+   needs a *distinct simulated signature* — and only families your solver
+   can uniquely NAME become graded truths (`SOLVER_SUPPORTED`).
 3. Implement the solver as evidence-driven decision logic over observation
    readings only.
 4. Write simulator-honesty tests (the kernel must reproduce the phenomenon).
-5. Generate golden fixtures per cause; add catalog-conformance checks for the
-   concept ids you reference.
-6. Ship a `domain-manifest.<id>.json` describing the possibility space.
+5. Generate golden fixtures per truth family × band; add catalog-conformance
+   checks for the concept ids you reference.
+6. Run the seed-fuzz sweep over the new domain and commit the statistics.
 
 ## Anti-overengineering note
 

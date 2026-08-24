@@ -3,20 +3,23 @@
 *Generation as a constrained process inside a defined possibility space —
 never free-form invention.*
 
-## The pipeline
+## The pipeline (v0.2, cpu-memory)
 
 ```
 learning objective (DAU concepts + tier band)
   → template selection            (deterministic; caller-chosen in v1)
-  → cause selection               (stochastic, from plugin catalogue)
-  → distractor set                (stochastic, remaining plausible causes)
-  → hidden parameter construction (rule-based: streams/geometry per cause)
-  → baseline construction         (rule-based: benign twin of same workload)
+  → truth-family selection        (stochastic, from SOLVER_SUPPORTED subset)
+  → variant selection             (stochastic; structural sub-recipes)
+  → geometry draw                 (size × associativity; optional L2)
+  → hidden parameter construction (rule-based: streams/geometry per variant)
+  → HONEST-TRUTH GUARD            (re-draw if variant ≈ sibling under probes)
+  → distractor set                (stochastic, evidence-separable families)
   → action + hypothesis assembly  (rule-based + stochastic ordering)
   → difficulty realisation        (band → structural choices)
   → briefing assembly             (templated prose; never names the cause)
   → structural validation         (invariants)
-  → solver validation             (solvability, no-early-solve, refutability)
+  → solver validation             (solvability, no-early-solve,
+                                   refutation, multi-path discovery)
   → WorldSpec (sealed)            (+ golden fixture if new coverage)
 ```
 
@@ -25,10 +28,11 @@ learning objective (DAU concepts + tier band)
 | Stage | Nature | Notes |
 | --- | --- | --- |
 | Template selection | deterministic | `(domainId, templateId)` given by caller |
-| Cause selection | stochastic (seeded) | uniform over catalogue in v1; later weighted by learner model |
-| Distractor selection | stochastic (seeded) | all remaining causes above band 1 |
-| Hidden parameters | **pure rule-based** | the heart: e.g. conflict worlds build N>associativity distinct lines mapping to one set |
-| Baseline twin | pure rule-based | known-good variant of the same workload for honest before/after evidence |
+| Truth-family selection | stochastic (seeded) | uniform over solver-namable causes in v0.2 |
+| Variant selection | stochastic (seeded) | structural sub-recipes per family |
+| Hidden parameters | **pure rule-based** | e.g. conflict worlds build N>associativity distinct lines mapping to one set |
+| Honest-truth guard | rule-based check + deterministic re-draw | prevents unfair indistinguishable truths |
+| Baseline twin | pure rule-based | known-good variant of same workload for honest before/after |
 | Observations at runtime | pure rule-based | simulation kernels re-run on demand |
 | Briefing prose | templated | slot-filled from geometry/workload facts; cause-neutral by construction and tested |
 | Narrative polish / hint text | optional LLM, later | may rephrase; must not touch hidden, actions, hypotheses, solution |
@@ -37,37 +41,43 @@ learning objective (DAU concepts + tier band)
 
 The generator cannot produce arbitrary combinations because:
 
-1. **Causes come from a fixed catalogue** with declared mechanism summaries.
-2. **Each cause has exactly one hidden-state recipe per template**, written so
-   that real simulation yields its signature symptom class (verified by
+1. **Causes come from a fixed catalogue** with declared mechanism summaries
+   and signature classes.
+2. **Each cause has per-variant hidden-state recipes**, written so that real
+   simulation yields its signature symptom class (verified by
    simulator-honesty tests).
-3. **Distractors are other catalogue entries**, so every wrong hypothesis is
-   one the domain expert endorsed as plausible.
+3. **Distractors are other catalogue entries** that are plausible AND
+   evidence-separable — never strawmen.
 4. **Difficulty changes structure** (see DIFFICULTY_MODEL.md), not prose.
 
 Adding a possibility = adding a catalogue entry + a recipe + honesty tests +
 fixtures. Nothing else in the pipeline changes.
 
-## Worked example (`cpu-memory/regression-diagnosis`, cause = conflict-miss)
+## Worked example (`regression-diagnosis`, truth = false-sharing/split-struct)
 
-1. rng picks `conflict-miss` from four causes; three become distractors.
-2. Geometry drawn: 16 KiB, 64 B lines, 4-way → 64 sets.
-3. Recipe: pick set index s; take associativity+1..+2 distinct addresses
-   congruent to set s; interleave with a 16-line resident region; repeat 96
-   passes → hot lines genuinely thrash set s while everything else hits.
-4. Baseline twin: same access count over a small resident window.
-5. Actions/hypotheses assembled; hypotheses shuffled; solution path declared
-   (`perf-counters → set-distribution`).
-6. Validation runs the solver along the path (must conclude `conflict-miss`),
-   checks prefixes don't solve early, checks each distractor is refuted or
-   implicitly eliminated.
-7. Spec sealed. If seed is a golden seed, CI pins it byte-for-byte.
+1. rng draws `false-sharing` from six solver-supported causes;
+   `split-struct` from its two variants. Distractors drawn from separable
+   classes: spatial-loss, compulsory-churn, phase-change (band 3 keeps 3).
+2. Geometry drawn: 32 KiB, 64 B lines, 4-way → 128 sets.
+3. Recipe: one cache line at a seed-chosen base; core0 writes word+0, core1
+   writes word+32, strictly alternating ×512 → ownership ping-pong with
+   zero same-word conflicts; interleaved reads over an 8-line resident
+   window (well-cached).
+4. Baseline twin: resident-window sweep of identical access count.
+5. Actions/hypotheses assembled; solution path declared
+   (`perf-counters > coherence-probe`).
+6. Validation: solver on path concludes `false-sharing`; prefixes don't;
+   coherence probe excludes both sharing modes when traffic is absent;
+   multi-path enumeration records alternative solving subsets; ≥1
+   distractor refuted.
+7. Spec sealed (`pruneUndefined` for JSON fixpoint). Golden seeds pin it
+   byte-for-byte.
 
 ## Failure handling
 
 Any validation error throws `WorldGenerationError` — the engine returns *no
 world* rather than a repaired-looking one. There is deliberately no
-auto-repair loop in v1: a generation recipe that fails validation is a bug in
-the recipe (fix the recipe), not noise to paper over. A bounded
-regenerate-with-new-seed retry may be added later for genuinely stochastic
-edge cases, but only alongside a metric tracking how often recipes fail.
+auto-repair loop in v0.2: a generation recipe that fails validation is a bug
+in the recipe (fix the recipe), not noise to paper over. The honest-truth
+guard is the one sanctioned re-draw, because it encodes domain knowledge
+about separability rather than papering over a validation failure.

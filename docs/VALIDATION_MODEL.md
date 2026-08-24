@@ -1,16 +1,16 @@
 # Validation Model
 
-*A world does not ship because the generator produced it. It ships because it
-survived checks that do not trust the generator.*
+*A world does not ship because the generator produced it. It ships because
+it survived checks that do not trust the generator.*
 
 ## Principle: generation and validation are different authorities
 
-The same code path must never both create a world and declare it correct.
-Concretely: `generate()` may not call `solve()`; validation drives the
-plugin's independent solver over learner-visible evidence only, plus
-structural invariants over the sealed spec. The solver is deliberately
-implemented against observations (strings/numbers), not hidden state — if the
-hidden model drifts from the evidence model, validation breaks loudly.
+`generate()` may never call its own solver to certify itself. Concretely:
+the engine runs `validateWorldStructure()` + `solveCheck()` on the assembled
+spec, and `solveCheck` drives the plugin's **independent solver** over
+learner-visible evidence only. The solver is written against observation
+readings (strings/numbers), never hidden state — if the hidden model drifts
+from the evidence model, validation breaks loudly.
 
 ## Layer 1 — structural invariants (`validateWorldStructure`, always run)
 
@@ -18,63 +18,77 @@ hidden model drifts from the evidence model, validation breaks loudly.
 - ≥1 concept reference; prerequisites reference exercised concepts (warning).
 - **Exactly one** hypothesis has `isTrue`.
 - `solution.correctHypothesisId` equals the flagged true hypothesis.
-- ≥2 distractors above band 1; distractor count consistent with profile.
+- ≥2 distractors above band 1.
 - Every declared discriminating action exists in `actions`.
-- `actions.length ≥ difficulty.minInvestigations`.
+- `actions.length ≥ difficulty.minInvestigations + 1`.
 
 ## Layer 2 — solver checks (`solveCheck`, always run at generation)
 
-1. **Solvability.** The plugin solver, fed exactly the declared
+1. **Solvability.** The independent solver, fed exactly the declared
    discriminating-action observations, must conclude the true cause.
    Otherwise: error `unsolvable`, world refused.
-2. **No early solve.** Every strict prefix of the path must NOT already
-   conclude the cause (warnings today; a band-dependent hard gate later).
-   This enforces "reasoning, not lucky guessing".
-3. **Distractor refutability.** After the full path, every distractor must be
-   either explicitly marked refuted by some observation
-   (`discriminatesAgainst`) or implicitly eliminated by the solver landing
-   uniquely on truth. Refused as `distractor-unrefuted` otherwise.
+2. **No early solve.** Prefixes of the path must not already conclude the
+   truth (`early-solve` warning; recorded as `earlySolveAt` in the report).
+3. **Multi-path discovery.** Every action subset of size ≤4 is tested;
+   subsets other than the declared path that also solve are counted as
+   `alternativePaths` (with examples). This makes "multiple valid
+   investigation strategies" a measured property, not a claim.
+4. **Distractor refutation.** Over the FULL learner-visible action set:
+   - every distractor must be excluded by some observation's
+     `discriminatesAgainst`, or be explicitly declared `unrefutable`
+     (same signature class);
+   - at least one distractor must be refuted somewhere, else error
+     `non-discriminating` — a world where nothing is ever excluded is not
+     a diagnosis.
 
 ## Layer 3 — test-suite gates (CI)
 
 | Gate | What it proves |
 | --- | --- |
-| Determinism | same seed ⇒ deep-equal spec; different seed ⇒ different parameters |
-| Bulk solve | 60 seeds × all four causes: solver lands on truth every time; all causes reachable across seeds |
-| Partial-path discipline | 30 seeds: single-probe prefixes never give the answer away |
+| Determinism | same seed ⇒ deep-equal spec |
+| Bulk solve | 60 seeds: solver lands on truth every time; all causes reachable |
+| Partial-path discipline | single probes never give the answer away (30 seeds × all actions) |
 | Briefing neutrality | briefing never names any distractor's label |
 | JSON fixpoint | specs survive `JSON.parse(JSON.stringify(...))` unchanged |
-| Golden fixtures | pinned worlds regenerate byte-identically; still validate + solve after any change |
-| Simulator honesty | kernels reproduce the phenomena themselves (conflict streams concentrate set misses; alternating writers ping-pong ownership; descending strides defeat next-line prefetch) |
+| Golden fixtures | representative worlds per family × band regenerate byte-identically and still solve |
+| Simulator honesty | kernels reproduce the phenomena themselves (conflicts concentrate set misses, writers ping-pong ownership, strides defeat prefetch) |
 | Contract conformance | worlds round-trip through canonical dau-practice-labs request/result schemas |
+| Seed fuzz | 300-seed band sweep + 100 seeds per other band asserting P1–P9 (see tests/seedfuzz.test.ts) |
+
+### Seed-fuzz properties (P1–P9)
+
+P1 no generation throws · P2 structural validation passes · P3 declared
+path solves · P4 no single probe reveals the answer · P5 all distractors
+refuted or declared · P6 ≥1 distractor refuted (world is diagnostic) ·
+P7 byte-reproducible regeneration + cross-seed diversity · P8 JSON fixpoint
+· P9 all solver-supported causes reachable.
 
 ## Layer 4 — adversarial passes (planned, not yet built)
 
-- **Solver-vs-solver fuzzing:** a second, differently-implemented solver per
-  domain (e.g. exhaustive hypothesis scoring) run over large seed batches;
-  disagreement between solvers flags worlds whose evidence is ambiguous to
-  competent-but-different reasoners.
-- **LLM attack pass:** an LLM given briefing + hypotheses + full evidence,
-  asked to diagnose without tools; systematically wrong answers flag worlds
-  where evidence synthesis requires knowledge the curriculum hasn't taught.
-  (The LLM judges *difficulty*, never truth.)
-- **Difficulty calibration:** human-in-the-loop probe counts and time-to-commit
-  vs the declared `minInvestigations` and band; recalibrate bands from data.
+- **Solver-vs-solver fuzzing:** a second, differently-implemented solver
+  run over large seed batches; disagreement flags ambiguous evidence.
+- **LLM attack pass:** an LLM given briefing + hypotheses + evidence judges
+  *difficulty* only, never truth.
+- **Difficulty calibration:** probe counts and wrong-commit patterns vs
+  declared bands.
 
-## Invariants worth restating
+## Honest ambiguity policy
 
-- The engine returns no world on any error-severity issue — there is no
-  "ship with warnings" path for errors.
-- Reproducibility means *byte-for-byte*, including hidden state, so any
-  behavioural change is forced through fixture updates consciously.
-- Validation artifacts (solving paths) are retained with fixtures so future
-  changes can diff *why* a world stopped solving, not just that it did.
+Some same-class hypotheses cannot be separated by current probes (e.g.
+conflict vs associativity-cliff without a counterfactual run). The model
+does not pretend otherwise:
+
+- such families are documented as not-yet-gradable truths
+  (`SOLVER_SUPPORTED`);
+- generation's honest-truth guard re-draws when a chosen variant would be
+  indistinguishable from a sibling;
+- the `unrefutable` hypothesis flag exists so a future UI can surface
+  "cannot be excluded" honestly instead of faking refutation.
 
 ## Semantic-truth caveat
 
 Automated checks prove internal consistency (evidence follows from state;
-state matches the claimed cause class). They cannot prove the *domain model*
-is technically faithful — that a simulated 4-way LRU behaves like real
-hardware. That burden sits on simulator-honesty tests plus curriculum-source
-grounding of each kernel, and eventually on SME review recorded per domain
-version. This limit is stated rather than hidden.
+state matches the claimed cause class). They cannot prove the *domain
+model* is technically faithful. That burden sits on simulator-honesty
+tests plus curriculum-source grounding of each kernel, and eventually SME
+review recorded per domain version. This limit is stated rather than hidden.
