@@ -77,8 +77,11 @@ diversity fingerprint metric.
 The validator enumerates all action subsets (≤4 probes) and records those
 that also solve:
 
-- average alternative paths per world: **6.3–6.9 across all bands**
-- maximum observed: **10 alternative solving subsets** beyond the declared path
+- average DISTINCT alternative paths per world: **measured after the
+  distinctness-weighted metric landed (see fixtures/seedfuzz-results.json);
+  the earlier "6.3–6.9" figure counted supersets of the declared path and
+  overstated diversity** — supersets are the same strategy plus wasted
+  probes and are now reported separately as `solvingSubsetsTotal`
 
 Example from a band-3 compulsory-churn world (declared path
 `perf-counters > set-distribution > miss-timeline`), alternatives include:

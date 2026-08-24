@@ -22,7 +22,7 @@ read briefing → form hypotheses → choose evidence (spend probes)
 | predict (freeze) | shipped | timestamped |
 | commit diagnosis | shipped | graded against ground truth |
 | run counterfactual (prefetch-off) | shipped | 2 — rerun with policy changed |
-| run counterfactual (assoc-halve) | implemented, gated to band ≥4 | 2 |
+| run counterfactual (assoc-halve) | NOT IMPLEMENTED — planned v0.3 separating probe | 2 (planned) |
 | step / change state | later | predictive & failure-injection modes |
 | annotate hypothesis | later | feeds misconception targeting |
 | request hint | later | ladder keyed to committed-wrong hypotheses |

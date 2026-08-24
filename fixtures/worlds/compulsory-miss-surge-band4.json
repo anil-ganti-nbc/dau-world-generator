@@ -5249,7 +5249,8 @@
       "id": "spatial-locality-loss",
       "label": "Spatial locality loss",
       "detail": "The access pattern jumps across memory instead of walking it; every cache line is used once instead of many times, multiplying traffic without exceeding capacity.",
-      "isTrue": false
+      "isTrue": false,
+      "unrefutable": true
     },
     {
       "id": "phase-change",

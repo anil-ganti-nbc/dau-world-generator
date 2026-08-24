@@ -1,0 +1,86 @@
+{
+  "$id": "kernel-rules.schema.json",
+  "title": "Causal-rule inventory with SME sign-off",
+  "description": "Machine-readable inventory of every causal rule in a domain's kernels, each carrying provenance classification and a per-rule SME review record. The gate is SIGNED_OFF only when every rule verdict is non-PENDING and the reviewer field names a human.",
+  "type": "object",
+  "required": ["domainId", "domainVersion", "inventoryVersion", "status", "smeGate", "rules", "notModeled"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "domainId": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "domainVersion": { "type": "string", "description": "Must match the DomainPlugin version this inventory describes." },
+    "templateId": { "type": "string" },
+    "inventoryVersion": { "type": "integer", "minimum": 1 },
+    "status": {
+      "enum": ["DRAFT", "PENDING_SME_REVIEW", "IN_REVIEW", "SIGNED_OFF"],
+      "description": "SIGNED_OFF requires smeGate.verdict == SIGNED_OFF and every rule reviewed."
+    },
+    "smeGate": {
+      "type": "object",
+      "required": ["reviewer", "reviewedAt", "verdict", "notes"],
+      "properties": {
+        "reviewer": { "type": ["string", "null"], "description": "Human reviewer name. null while pending." },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time" },
+        "verdict": { "enum": ["PENDING", "IN_PROGRESS", "CHANGES_REQUESTED", "SIGNED_OFF"] },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/rule" }
+    },
+    "notModeled": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explicit list of real-world behaviours deliberately absent from the model. Reviewers confirm this list matches reality."
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "object",
+      "required": ["id", "title", "kernel", "claim", "realWorldBasis", "provenance", "confidence", "affectsChannels", "smeReview"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "title": { "type": "string" },
+        "kernel": { "type": "string", "description": "file:symbol location of the implementing code." },
+        "claim": { "type": "string", "description": "What the kernel asserts about cause and effect. Must be checkable against real-world behaviour." },
+        "realWorldBasis": { "type": "string", "description": "How this maps to reality, including known deviations. Honest deviations belong here, not in footnotes." },
+        "provenance": {
+          "enum": [
+            "grounded-abstraction",
+            "deliberate-simplification",
+            "pedagogical-fiction",
+            "unknown-disputed"
+          ],
+          "description": "grounded = textbook/derivable. deliberate-simplification = directionally right, magnitudes/boundaries simplified. pedagogical-fiction = contrived constant/coupling that must never be quoted as physical. unknown/disputed = no settled basis; blocks sign-off."
+        },
+        "confidence": {
+          "type": "string",
+          "description": "Free-form but expected vocabulary: high | medium | medium-high | high-direction-low-magnitude | high-direction-low-boundaries | direction-only | methodology-disclosed."
+        },
+        "affectsChannels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Observation channels whose readings depend on this rule."
+        },
+        "diagnosticHeuristicTrained": {
+          "type": "string",
+          "description": "The heuristic a learner walks away with after repeated exposure. Required when provenance is deliberate-simplification or pedagogical-fiction."
+        },
+        "smeReview": { "$ref": "#/definitions/smeReview" }
+      },
+      "additionalProperties": false
+    },
+    "smeReview": {
+      "type": "object",
+      "required": ["verdict", "reviewerNote"],
+      "properties": {
+        "verdict": { "enum": ["PENDING", "PASS", "REWORD", "RETUNE", "REMOVE"] },
+        "reviewerNote": { "type": ["string", "null"], "description": "Required (non-null) for REWORD/RETUNE/REMOVE: what to change and why." }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

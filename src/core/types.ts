@@ -13,15 +13,19 @@ import type { ConceptRef } from "./concepts";
 export interface DifficultyProfile {
   /** 1–5 overall band, derived from the dimensions below at generation time. */
   band: 1 | 2 | 3 | 4 | 5;
-  /** Number of state variables that actually matter to the diagnosis. */
+  /**
+   * DERIVED, NOT MEASURED: computed from the requested band and hypothesis
+   * count by a fixed formula (see domain plugin). Structural claims that ARE
+   * validated live elsewhere: distractorHypotheses and minInvestigations.
+   */
   relevantVariables: number;
-  /** Number of plausible-but-wrong hypotheses the world keeps alive. */
+  /** Number of plausible-but-wrong hypotheses the world keeps alive. MEASURED (validated). */
   distractorHypotheses: number;
-  /** Causal steps between root cause and headline symptom. */
+  /** DERIVED, NOT MEASURED: formula from band; no validation inspects it. */
   causalDepth: number;
-  /** Fraction of truth-relevant variables directly observable (0–1). */
+  /** DERIVED, NOT MEASURED: formula from band; no validation inspects it. */
   observability: number;
-  /** How many inspection actions a competent solver needs (estimate). */
+  /** How many inspection actions a competent solver needs. MEASURED indirectly (declared path is validated to solve; shorter prefixes are checked not to). */
   minInvestigations: number;
 }
 

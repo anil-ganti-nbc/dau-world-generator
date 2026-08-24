@@ -501,7 +501,12 @@ export class CpuMemoryDomain implements DomainPlugin {
 
     // Conflict class.
     if (S.skewHigh) {
-      if (S.phaseCount > 1) return { hypothesisId: "phase-change" };
+      // Phase-change may only be named when the timeline itself supports a
+      // non-flat multi-phase profile. Phase LABELS alone are not enough:
+      // labels and shape are correlated evidence from the same probe, so
+      // naming on labels after a flat-shape contradiction would let one
+      // fabricated reading silently re-grade the world (caught by MUT-5).
+      if (S.phaseCount > 1 && S.timelineShape !== "flat") return { hypothesisId: "phase-change" };
       return { hypothesisId: "conflict-miss" };
     }
 
@@ -567,6 +572,13 @@ export class CpuMemoryDomain implements DomainPlugin {
   private buildHypotheses(truth: FamilyDef, distractors: FamilyDef[], rng: Rng): Hypothesis[] {
     const mk = (f: FamilyDef, isTrue: boolean): Hypothesis => {
       const h: Hypothesis = { id: f.id, label: f.label, detail: f.mechanism, isTrue };
+      // Same-signature-class siblings share the truth's top-level evidence
+      // signature and cannot be excluded by any probe in this world. Declare
+      // that here so validation and (later) the UI can surface it honestly
+      // instead of presenting a silent wrong answer.
+      if (!isTrue && SIGNATURE_CLASS[f.id] === SIGNATURE_CLASS[truth.id]) {
+        h.unrefutable = true;
+      }
       return h;
     };
     const list = [mk(truth, true)];
@@ -577,6 +589,9 @@ export class CpuMemoryDomain implements DomainPlugin {
   private buildDifficulty(band: number, distractorCount: number, h: CpuMemoryHidden, actionCount: number): DifficultyProfile {
     const b = Math.min(5, Math.max(1, Math.round(band))) as 1 | 2 | 3 | 4 | 5;
     const phaseCount = h.workload.phases.length;
+    // NOTE: relevantVariables / causalDepth / observability are DERIVED from
+    // the band by formula. They describe the generation recipe, not the
+    // built world; no validation inspects them. See DifficultyProfile docs.
     return {
       band: b,
       relevantVariables: 3 + distractorCount + phaseCount,

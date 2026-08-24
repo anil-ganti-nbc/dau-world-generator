@@ -27,6 +27,8 @@ interface BandStats {
   uniqueFingerprints: number;
   avgAlternativePaths: number;
   maxAlternativePaths: number;
+  avgDistinctAlternativePaths: number;
+  maxDistinctAlternativePaths: number;
 }
 
 const results: BandStats[] = [];
@@ -47,9 +49,12 @@ for (const band of BANDS) {
     uniqueFingerprints: 0,
     avgAlternativePaths: 0,
     maxAlternativePaths: 0,
+    avgDistinctAlternativePaths: 0,
+    maxDistinctAlternativePaths: 0,
   };
   const prints = new Set<string>();
   let altSum = 0;
+  let distinctAltSum = 0;
   for (let i = 0; i < PER_BAND; i++) {
     const seed = `fuzz-${band}-${i}`;
     let spec;
@@ -77,11 +82,15 @@ for (const band of BANDS) {
       // only count early solves that reveal before the final probe
     }
     if (report.survivingDistractors.length > 0 && !report.distractorsRefutable) s.nonDiagnostic++;
-    altSum += report.alternativePaths;
-    s.maxAlternativePaths = Math.max(s.maxAlternativePaths, report.alternativePaths);
+    altSum += report.solvingSubsetsTotal;
+    distinctAltSum += report.alternativePaths;
+    s.maxAlternativePaths = Math.max(s.maxAlternativePaths, report.solvingSubsetsTotal);
+    s.maxDistinctAlternativePaths = Math.max(s.maxDistinctAlternativePaths, report.alternativePaths);
   }
   s.uniqueFingerprints = prints.size;
   s.avgAlternativePaths = s.generated > 0 ? Math.round((altSum / s.generated) * 10) / 10 : 0;
+  // Distinctness-weighted: subsets containing the declared path are padding.
+  s.avgDistinctAlternativePaths = s.generated > 0 ? Math.round((distinctAltSum / s.generated) * 10) / 10 : 0;
   results.push(s);
 }
 

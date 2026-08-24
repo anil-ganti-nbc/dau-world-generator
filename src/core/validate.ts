@@ -82,9 +82,17 @@ export interface SolveReport {
   earlySolveAt: number | null;
   distractorsRefutable: boolean;
   solvingPath: string[];
-  /** Number of alternative action subsets (size ≤ maxAltSize) that also solve. */
+  /**
+   * Number of DISTINCT alternative investigation strategies: action subsets
+   * that solve WITHOUT containing the declared path as a subset. A superset
+   * of the declared path is padding (same reasoning + a wasted probe), not
+   * a different strategy; only subsets that drop or replace a declared step
+   * count here.
+   */
   alternativePaths: number;
-  /** Example alternative paths (for fixtures/docs). */
+  /** Raw count of solving subsets including supersets of the declared path. */
+  solvingSubsetsTotal: number;
+  /** Example DISTINCT alternatives (for fixtures/docs). */
   exampleAlternatives: string[][];
   survivingDistractors: string[];
   issues: ValidationIssue[];
@@ -146,15 +154,26 @@ export function solveCheck(spec: WorldSpec, plugin: DomainPlugin): SolveReport {
   // Multi-path discovery: any proper subset of measurable actions that also
   // solves counts as an alternative investigation strategy. Cap subset size
   // to keep this cheap (≤4 probes).
+  //
+  // Distinctness weighting: a solving subset that CONTAINS the declared path
+  // is a superset — the same reasoning plus wasted probes. It proves nothing
+  // about path diversity and is counted only in `solvingSubsetsTotal`. A
+  // subset counts as a DISTINCT strategy in `alternativePaths` only when it
+  // does not contain every declared action (i.e. it drops or replaces at
+  // least one declared step with different evidence).
   const pool = spec.actions.map((a) => a.id).filter((id) => id !== "cache-params");
   let alternativePaths = 0;
+  let solvingSubsetsTotal = 0;
   const exampleAlternatives: string[][] = [];
   for (const subset of subsets(pool, Math.min(4, discriminating.length + 1))) {
     const isDeclared =
       subset.length === discriminating.length &&
       [...subset].sort().join() === [...discriminating].sort().join();
     if (isDeclared) continue;
-    if (solvesVia(plugin, spec, subset)) {
+    if (!solvesVia(plugin, spec, subset)) continue;
+    solvingSubsetsTotal += 1;
+    const containsDeclared = discriminating.every((id) => subset.includes(id));
+    if (!containsDeclared) {
       alternativePaths += 1;
       if (exampleAlternatives.length < 5) exampleAlternatives.push(subset);
     }
@@ -192,12 +211,34 @@ export function solveCheck(spec: WorldSpec, plugin: DomainPlugin): SolveReport {
     issues.push(issue("error", "non-discriminating", "no observation excludes any hypothesis — world is not diagnostic"));
   }
 
+  // Anti-rubber-stamp: `unrefutable` may only be declared on hypotheses that
+  // actually survive all evidence AND are refutable in principle (i.e. NOT
+  // excluded by any probe). Declaring it on an excluded hypothesis would let
+  // generators dodge the refutation requirement by fiat.
+  const excluded = new Set<string>();
+  for (const obs of allObservations) {
+    for (const h of obs.discriminatesAgainst ?? []) excluded.add(h);
+  }
+  for (const h of spec.hypotheses) {
+    if (!h.unrefutable || h.isTrue) continue;
+    if (excluded.has(h.id)) {
+      issues.push(
+        issue(
+          "error",
+          "unrefutable-but-refuted",
+          `hypothesis ${h.id} is declared unrefutable but evidence excludes it — remove the declaration`,
+        ),
+      );
+    }
+  }
+
   return {
     solvable,
     earlySolveAt,
     distractorsRefutable,
     solvingPath: [...discriminating],
     alternativePaths,
+    solvingSubsetsTotal,
     exampleAlternatives,
     survivingDistractors: surviving,
     issues,

@@ -30,9 +30,11 @@ from the evidence model, validation breaks loudly.
 2. **No early solve.** Prefixes of the path must not already conclude the
    truth (`early-solve` warning; recorded as `earlySolveAt` in the report).
 3. **Multi-path discovery.** Every action subset of size ≤4 is tested;
-   subsets other than the declared path that also solve are counted as
-   `alternativePaths` (with examples). This makes "multiple valid
-   investigation strategies" a measured property, not a claim.
+   subsets that solve WITHOUT containing the declared path count as
+   DISTINCT alternative strategies (`alternativePaths`); supersets of the
+   declared path are padding (same reasoning plus wasted probes) and are
+   counted only in `solvingSubsetsTotal`. This makes "multiple valid
+   investigation strategies" a measured, distinctness-weighted property.
 4. **Distractor refutation.** Over the FULL learner-visible action set:
    - every distractor must be excluded by some observation's
      `discriminatesAgainst`, or be explicitly declared `unrefutable`
@@ -54,6 +56,9 @@ from the evidence model, validation breaks loudly.
 | Simulator honesty | kernels reproduce the phenomena themselves (conflicts concentrate set misses, writers ping-pong ownership, strides defeat prefetch) |
 | Contract conformance | worlds round-trip through canonical dau-practice-labs request/result schemas |
 | Seed fuzz | 300-seed band sweep + 100 seeds per other band asserting P1–P9 (see tests/seedfuzz.test.ts) |
+| Kernel mutations | seeded corruptions of coherence/prefetch/timeline/set-index/counter channels (tests/kernel-mutation.test.ts); each attack must end in rejection or bounded, documented residual — never silent mis-grading |
+| Reading truthfulness | sampled readings recomputed through independent mini-implementations (LRU, prefetch, coherence ledger) must match shipped observations (tests/reading-truthfulness.test.ts). Proves the instrument is honest — NOT that the physics is real (that is the SME gate) |
+| SME inventory gate | kernel-rule inventory parses, covers all evidence channels, no anonymous sign-offs, gate status consistent with per-rule verdicts (tests/kernel-inventory.test.ts) |
 
 ### Seed-fuzz properties (P1–P9)
 
@@ -82,8 +87,11 @@ does not pretend otherwise:
   (`SOLVER_SUPPORTED`);
 - generation's honest-truth guard re-draws when a chosen variant would be
   indistinguishable from a sibling;
-- the `unrefutable` hypothesis flag exists so a future UI can surface
-  "cannot be excluded" honestly instead of faking refutation.
+- the `unrefutable` hypothesis flag is now SET by generation: any distractor
+  sharing the truth's signature class is declared unrefutable, and validation
+  enforces both directions (declared ⇒ actually survives all evidence;
+  surviving ⇒ must be declared). A future UI can surface "cannot be excluded"
+  honestly instead of faking refutation.
 
 ## Semantic-truth caveat
 

@@ -2439,7 +2439,8 @@
       "id": "compulsory-miss-surge",
       "label": "Cold-data churn",
       "detail": "The loop walks fresh data every pass instead of reusing anything; nearly every access is a first-touch miss even though nothing exceeds capacity.",
-      "isTrue": false
+      "isTrue": false,
+      "unrefutable": true
     }
   ],
   "solution": {

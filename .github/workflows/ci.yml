@@ -35,3 +35,10 @@ jobs:
       - name: Build
         working-directory: repo
         run: npm run build
+      # Real-browser E2E: unit tests + build prove nothing about whether the
+      # UI is actually interactive (the invisible-overlay class of failure).
+      # This step boots vite, drives Chromium through probe -> freeze ->
+      # commit, and asserts zero page errors.
+      - name: E2E (real browser)
+        working-directory: repo
+        run: npx playwright install --with-deps chromium && node scripts/e2e.mjs

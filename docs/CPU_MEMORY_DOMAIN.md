@@ -141,7 +141,7 @@ Documented honestly; none are silent:
 
 | Probe | Unlocks |
 | --- | --- |
-| assoc-halve-run (counterfactual, implemented, gated off) | associativity-cliff vs conflict-miss |
+| assoc-halve-run (counterfactual, NOT YET IMPLEMENTED) | associativity-cliff vs conflict-miss |
 | working-set-vs-capacity bound report | capacity-miss vs compulsory-churn |
 | prefetch-off counterfactual wired into solver | storm/starved vs spatial loss |
 | per-level (L2) counters in observations | hierarchy-mismatch vs temporal loss |

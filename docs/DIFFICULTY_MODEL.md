@@ -9,9 +9,15 @@ in `cpu-memory` v2.0 and shows measured easy-vs-hard differences.*
 | Dimension | Where it lives in code | Band effect |
 | --- | --- | --- |
 | plausible hypotheses | `separableAlternatives` count → distractor set size | band 1: 1 distractor · band 2: ≤2 · bands 3–5: 3 |
-| relevant variables | `DifficultyProfile.relevantVariables` = 3 + distractors + phase count | grows with hypotheses and multi-phase workloads |
-| causal depth | `causalDepth` = min(3, 1 + ⌊band/2⌋) | band 1–2: direct symptom→cause; band ≥3: evidence-chain (distribution ⇒ prefetch ⇒ cause) |
-| observability | `observability` = 0.85 − 0.08×band | higher bands derive more readings indirectly (skew ratios vs raw counters) |
+| relevant variables | `DifficultyProfile.relevantVariables` = 3 + distractors + phase count — **DERIVED, not measured** | grows with hypotheses and multi-phase workloads |
+| causal depth | `causalDepth` = min(3, 1 + ⌊band/2⌋) — **DERIVED, not measured** | band 1–2: direct symptom→cause; band ≥3: evidence-chain (distribution ⇒ prefetch ⇒ cause) |
+| observability | `observability` = 0.85 − 0.08×band — **DERIVED, not measured**; no validation inspects it | higher bands derive more readings indirectly (skew ratios vs raw counters) |
+
+> **Honesty note (post-review):** only `distractorHypotheses` and
+> `minInvestigations` are backed by validation. The three derived fields
+> above describe the generation *recipe*, not the built world, and must not
+> be quoted as measured difficulty properties until a calibration loop
+> replaces them with telemetry-derived values.
 | min investigations | `minInvestigations` = 2 (band <3) / 3 (band ≥3), bounded by action count | longer declared paths at high bands |
 | interacting effects | phase-change families always 2 phases; counterfactual probes gated to band ≥4 | conditional reasoning ("distribution spread, so now check prefetch") |
 | probe budget pressure | briefing declares budgeted reruns for band ≥3; costs declared per action (1 or 2) | deliberate probe choice becomes part of the game |

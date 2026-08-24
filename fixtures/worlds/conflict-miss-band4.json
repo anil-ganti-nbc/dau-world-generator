@@ -3771,7 +3771,8 @@
       "id": "phase-change",
       "label": "Workload phase change",
       "detail": "A new phase entered the rotation mid-run; early windows behave like the old build and later windows collapse onto a different working set.",
-      "isTrue": false
+      "isTrue": false,
+      "unrefutable": true
     },
     {
       "id": "conflict-miss",
