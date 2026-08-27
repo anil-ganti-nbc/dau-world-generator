@@ -1,3 +1,9 @@
+> **Authoritative copy:** Worlds now live natively in
+> [idle-time-learning-doodad](https://github.com/anil-ganti-nbc/idle-time-learning-doodad)
+> (`src/worlds`, commit `559507307414a32d146e51d1459bdff0e73baa0f` on
+> `feature/native-worlds`). This repository is **historical provenance**.
+> Do not gut it. New engine work should land in canonical DAU.
+
 # DAU World Generator
 
 **Causal, seeded, validated diagnostic worlds for [Dead Air University](https://github.com/anil-ganti-nbc/idle-time-learning-doodad).**
